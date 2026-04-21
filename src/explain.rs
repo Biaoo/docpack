@@ -22,7 +22,13 @@ pub fn run(args: ExplainArgs) -> Result<AppExit> {
         println!("- rule {} from {}", matched.rule.id, matched.source);
     }
     for expected_doc in expected.values() {
-        println!("  expects doc {}", expected_doc.path);
+        let modes = expected_doc
+            .modes
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("  expects doc {} (modes: {})", expected_doc.path, modes);
     }
 
     Ok(AppExit::Success)

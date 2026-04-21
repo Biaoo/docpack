@@ -39,7 +39,10 @@ impl Problem {
 }
 
 pub fn format_problem(problem: &Problem) -> String {
-    format!("- [{}] {}: {}", problem.problem_type, problem.path, problem.message)
+    format!(
+        "- [{}] {}: {}",
+        problem.problem_type, problem.path, problem.message
+    )
 }
 
 pub fn emit_no_changed_paths(format: OutputFormat) {

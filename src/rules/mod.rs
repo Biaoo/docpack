@@ -1,13 +1,40 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use crate::config::{LoadedRule, normalize_path, resolve_rule_path};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RequiredDocMode {
     ReviewOrUpdate,
     MetadataRefreshRequired,
     BodyUpdateRequired,
     MustExist,
+}
+
+impl RequiredDocMode {
+    pub fn from_option(value: Option<&str>) -> Self {
+        match value {
+            Some("metadata_refresh_required") => Self::MetadataRefreshRequired,
+            Some("body_update_required") => Self::BodyUpdateRequired,
+            Some("must_exist") => Self::MustExist,
+            Some("review_or_update") | None | Some(_) => Self::ReviewOrUpdate,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReviewOrUpdate => "review_or_update",
+            Self::MetadataRefreshRequired => "metadata_refresh_required",
+            Self::BodyUpdateRequired => "body_update_required",
+            Self::MustExist => "must_exist",
+        }
+    }
+}
+
+impl fmt::Display for RequiredDocMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +50,7 @@ pub struct ExpectedDoc {
     pub path: String,
     pub rules: BTreeSet<String>,
     pub changed_paths: BTreeSet<String>,
-    pub modes: BTreeSet<String>,
+    pub modes: BTreeSet<RequiredDocMode>,
 }
 
 pub fn matches_pattern(file_path: &str, pattern: &str) -> bool {
@@ -92,7 +119,10 @@ pub fn match_rules(changed_paths: &[String], loaded_rules: &[LoadedRule]) -> Vec
     for changed_path in changed_paths {
         for loaded in loaded_rules {
             if loaded.rule.triggers.iter().any(|trigger| {
-                matches_pattern(changed_path, &resolve_rule_path(&loaded.base_dir, &trigger.path))
+                matches_pattern(
+                    changed_path,
+                    &resolve_rule_path(&loaded.base_dir, &trigger.path),
+                )
             }) {
                 matches.push(MatchedRule {
                     changed_path: changed_path.clone(),
@@ -113,18 +143,20 @@ pub fn collect_expected_docs(matches: &[MatchedRule]) -> BTreeMap<String, Expect
     for matched in matches {
         for doc in &matched.rule.required_docs {
             let full_path = resolve_rule_path(&matched.base_dir, &doc.path);
-            let entry = expected.entry(full_path.clone()).or_insert_with(|| ExpectedDoc {
-                path: full_path,
-                rules: BTreeSet::new(),
-                changed_paths: BTreeSet::new(),
-                modes: BTreeSet::new(),
-            });
+            let entry = expected
+                .entry(full_path.clone())
+                .or_insert_with(|| ExpectedDoc {
+                    path: full_path,
+                    rules: BTreeSet::new(),
+                    changed_paths: BTreeSet::new(),
+                    modes: BTreeSet::new(),
+                });
 
             entry.rules.insert(matched.rule.id.clone());
             entry.changed_paths.insert(matched.changed_path.clone());
-            if let Some(mode) = &doc.mode {
-                entry.modes.insert(mode.clone());
-            }
+            entry
+                .modes
+                .insert(RequiredDocMode::from_option(doc.mode.as_deref()));
         }
     }
 
@@ -135,7 +167,7 @@ pub fn collect_expected_docs(matches: &[MatchedRule]) -> BTreeMap<String, Expect
 mod tests {
     use crate::config::{LoadedRule, RequiredDoc, Rule, Trigger};
 
-    use super::{collect_expected_docs, match_rules, matches_pattern};
+    use super::{RequiredDocMode, collect_expected_docs, match_rules, matches_pattern};
 
     #[test]
     fn glob_matching_supports_repo_relative_paths() {
@@ -143,8 +175,14 @@ mod tests {
             "tiangong-lca-next/config/routes.ts",
             "tiangong-lca-next/**"
         ));
-        assert!(matches_pattern(".ai-doc-lint/quality-rubric.md", ".ai-doc-lint/*.md"));
-        assert!(!matches_pattern(".ai-doc-lint/nested/file.md", ".ai-doc-lint/*.md"));
+        assert!(matches_pattern(
+            ".ai-doc-lint/quality-rubric.md",
+            ".ai-doc-lint/*.md"
+        ));
+        assert!(!matches_pattern(
+            ".ai-doc-lint/nested/file.md",
+            ".ai-doc-lint/*.md"
+        ));
     }
 
     #[test]
@@ -201,6 +239,10 @@ mod tests {
                 ".ai-doc-lint/config.yaml".to_string(),
                 "subrepo/.ai-doc-lint/config.yaml".to_string()
             ]
+        );
+        assert_eq!(
+            expected[".ai-doc-lint/config.yaml"].modes,
+            [RequiredDocMode::ReviewOrUpdate].into_iter().collect()
         );
     }
 }
