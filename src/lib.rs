@@ -6,6 +6,7 @@ pub mod diagnostics;
 pub mod explain;
 pub mod freshness;
 pub mod git;
+pub mod list_rules;
 pub mod metadata;
 pub mod reporters;
 pub mod review;
@@ -25,6 +26,7 @@ pub enum AppExit {
 pub fn run(cli: Cli) -> Result<AppExit> {
     match cli.command {
         Commands::Lint(args) => check::run(args),
+        Commands::ListRules(args) => list_rules::run(args),
         Commands::Coverage(args) => coverage::run(args),
         Commands::Freshness(args) => freshness::run(args),
         Commands::Diagnostics(args) => diagnostics::run(args),
