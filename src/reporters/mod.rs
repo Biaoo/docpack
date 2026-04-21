@@ -214,6 +214,8 @@ pub struct SarifProperties {
 pub struct SarifResultProperties {
     #[serde(rename = "problemType")]
     pub problem_type: String,
+    #[serde(rename = "diagnosticId")]
+    pub diagnostic_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -534,6 +536,7 @@ pub fn build_sarif_log_from_artifact(artifact: &DiagnosticsArtifact, mode: LintM
                     }],
                     properties: Some(SarifResultProperties {
                         problem_type: diagnostic.problem_type.clone(),
+                        diagnostic_id: diagnostic.diagnostic_id.clone(),
                     }),
                 })
                 .collect(),
@@ -790,7 +793,8 @@ mod tests {
 
     use super::{
         DIAGNOSTICS_SCHEMA_VERSION, Problem, SARIF_SCHEMA_URI, build_diagnostics_artifact,
-        build_report, build_report_from_artifact, build_sarif_log, report_hint_lines,
+        build_report, build_report_from_artifact, build_sarif_log, build_sarif_log_from_artifact,
+        report_hint_lines,
     };
 
     fn review_problem(
@@ -1016,6 +1020,10 @@ mod tests {
             Some("missing-review")
         );
         assert_eq!(
+            result.properties.as_ref().map(|p| p.diagnostic_id.as_str()),
+            Some("d001")
+        );
+        assert_eq!(
             run.properties.as_ref().map(|p| p.changed_paths.clone()),
             Some(vec!["src/index.ts".into()])
         );
@@ -1024,5 +1032,44 @@ mod tests {
             "error"
         );
         assert_eq!(run.tool.driver.name, "docpact");
+    }
+
+    #[test]
+    fn build_sarif_log_keeps_diagnostic_id_aligned_with_report() {
+        let problems = vec![
+            review_problem(
+                "docs/b.md",
+                "repo-rule",
+                "review_or_update",
+                "required_doc_not_touched",
+            ),
+            review_problem(
+                "docs/a.md",
+                "repo-rule",
+                "review_or_update",
+                "required_doc_not_touched",
+            ),
+        ];
+
+        let artifact = build_diagnostics_artifact(&problems, &["src/index.ts".into()], 1);
+        let report = build_report_from_artifact(&artifact, DiagnosticDetail::Compact, 1, 5);
+        let sarif = build_sarif_log_from_artifact(&artifact, LintMode::Warn);
+
+        assert_eq!(report.items[0].diagnostic_id, "d001");
+        assert_eq!(report.items[1].diagnostic_id, "d002");
+        assert_eq!(
+            sarif.runs[0].results[0]
+                .properties
+                .as_ref()
+                .map(|p| p.diagnostic_id.as_str()),
+            Some("d001")
+        );
+        assert_eq!(
+            sarif.runs[0].results[1]
+                .properties
+                .as_ref()
+                .map(|p| p.diagnostic_id.as_str()),
+            Some("d002")
+        );
     }
 }
