@@ -6,16 +6,17 @@ It is meant to be installed as a CLI and used in local workflows and CI.
 
 Current distribution status:
 
-- not published to crates.io yet
-- usable today via `cargo run` or `cargo install --path .`
-- intended future distribution: published crate and release binaries
+- published on crates.io
+- installable via `cargo install docpact`
+- runnable from source via `cargo run`
+- installable from a local checkout via `cargo install --path .`
 
 ## Quick Start
 
-Install from source for now:
+Install from crates.io:
 
 ```bash
-cargo install --path .
+cargo install docpact
 ```
 
 Create `.docpact/config.yaml` in the target repository, then run:
@@ -27,6 +28,8 @@ docpact lint --root /path/to/repo --files src/api/client.ts,README.md
 ```
 
 For a full setup guide, start with [../docs/README.md](../docs/README.md).
+
+If you are developing `docpact` itself, local source workflows are still supported via `cargo run` and `cargo install --path .`.
 
 ## Document Map
 
