@@ -69,6 +69,79 @@ pub fn get_tracked_paths(root_dir: &Path) -> Result<Vec<String>> {
     git_name_only(root_dir, &["ls-files"])
 }
 
+pub fn is_commit_reachable_from_head(root_dir: &Path, commit: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["merge-base", "--is-ancestor", commit, "HEAD"])
+        .current_dir(root_dir)
+        .output()
+        .into_diagnostic()?;
+
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if stderr.contains("Not a valid object name")
+                || stderr.contains("fatal: Not a valid commit name")
+                || stderr.contains("unknown revision")
+                || stderr.contains("bad revision")
+                || stderr.contains("fatal: ambiguous argument")
+            {
+                Ok(false)
+            } else {
+                Err(miette!(
+                    "git merge-base --is-ancestor {} HEAD failed: {}",
+                    commit,
+                    stderr
+                ))
+            }
+        }
+    }
+}
+
+pub fn get_unique_commits_since(
+    root_dir: &Path,
+    base_commit: &str,
+    paths: &[String],
+) -> Result<Vec<String>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut args = vec![
+        "rev-list".to_string(),
+        format!("{base_commit}..HEAD"),
+        "--".to_string(),
+    ];
+    args.extend(paths.iter().cloned());
+
+    let output = Command::new("git")
+        .args(args.iter().map(String::as_str))
+        .current_dir(root_dir)
+        .output()
+        .into_diagnostic()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(miette!(
+            "git rev-list {}..HEAD failed: {}",
+            base_commit,
+            stderr
+        ));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| miette!("git output was not valid UTF-8: {error}"))?;
+    Ok(dedup(
+        stdout
+            .lines()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+    ))
+}
+
 pub fn get_file_comparison(
     root_dir: &Path,
     args: &LintArgs,

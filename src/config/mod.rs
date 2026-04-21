@@ -34,6 +34,8 @@ struct ConfigFile {
     layout: ConfigLayout,
     #[serde(default)]
     coverage: CoverageConfig,
+    #[serde(default)]
+    freshness: FreshnessConfig,
     #[serde(rename = "docInventory", default)]
     doc_inventory: DocInventoryConfig,
     #[serde(default)]
@@ -46,6 +48,26 @@ pub struct CoverageConfig {
     pub include: Vec<String>,
     #[serde(default)]
     pub exclude: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct FreshnessConfig {
+    #[serde(default = "default_warn_after_commits")]
+    pub warn_after_commits: usize,
+    #[serde(default = "default_warn_after_days")]
+    pub warn_after_days: usize,
+    #[serde(default = "default_critical_after_days")]
+    pub critical_after_days: usize,
+}
+
+impl Default for FreshnessConfig {
+    fn default() -> Self {
+        Self {
+            warn_after_commits: default_warn_after_commits(),
+            warn_after_days: default_warn_after_days(),
+            critical_after_days: default_critical_after_days(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -102,6 +124,13 @@ pub struct LoadedCoverageConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedFreshnessConfig {
+    pub source: String,
+    pub base_dir: String,
+    pub freshness: FreshnessConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedDocInventoryConfig {
     pub source: String,
     pub base_dir: String,
@@ -134,6 +163,18 @@ pub fn normalize_path(value: &str) -> String {
     }
 
     output
+}
+
+fn default_warn_after_commits() -> usize {
+    50
+}
+
+fn default_warn_after_days() -> usize {
+    90
+}
+
+fn default_critical_after_days() -> usize {
+    180
 }
 
 pub fn path_relative_to(root_dir: &Path, path: &Path) -> String {
@@ -291,6 +332,24 @@ pub fn load_coverage_configs(
     Ok(loaded)
 }
 
+pub fn load_freshness_configs(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<LoadedFreshnessConfig>> {
+    let mut loaded = Vec::new();
+
+    for descriptor in list_impact_files(root_dir, config_override)? {
+        let parsed = load_config_file(&descriptor.abs_path, &descriptor.rel_path)?;
+        loaded.push(LoadedFreshnessConfig {
+            source: descriptor.rel_path,
+            base_dir: descriptor.base_dir,
+            freshness: parsed.freshness,
+        });
+    }
+
+    Ok(loaded)
+}
+
 pub fn load_doc_inventory_configs(
     root_dir: &Path,
     config_override: Option<&Path>,
@@ -386,6 +445,58 @@ pub fn validate_loaded_coverage_configs(
                     message: format!("coverage.exclude[{index}] {message}"),
                 });
             }
+        }
+    }
+
+    problems.sort_by(|left, right| {
+        (&left.source, &left.rule_id, &left.message).cmp(&(
+            &right.source,
+            &right.rule_id,
+            &right.message,
+        ))
+    });
+
+    problems
+}
+
+pub fn validate_loaded_freshness_configs(
+    loaded_configs: &[LoadedFreshnessConfig],
+) -> Vec<ConfigValidationProblem> {
+    let mut problems = Vec::new();
+
+    for loaded in loaded_configs {
+        if loaded.freshness.warn_after_commits == 0 {
+            problems.push(ConfigValidationProblem {
+                source: loaded.source.clone(),
+                rule_id: None,
+                message: "freshness.warn_after_commits must be greater than 0".into(),
+            });
+        }
+
+        if loaded.freshness.warn_after_days == 0 {
+            problems.push(ConfigValidationProblem {
+                source: loaded.source.clone(),
+                rule_id: None,
+                message: "freshness.warn_after_days must be greater than 0".into(),
+            });
+        }
+
+        if loaded.freshness.critical_after_days == 0 {
+            problems.push(ConfigValidationProblem {
+                source: loaded.source.clone(),
+                rule_id: None,
+                message: "freshness.critical_after_days must be greater than 0".into(),
+            });
+        }
+
+        if loaded.freshness.critical_after_days < loaded.freshness.warn_after_days {
+            problems.push(ConfigValidationProblem {
+                source: loaded.source.clone(),
+                rule_id: None,
+                message:
+                    "freshness.critical_after_days must be greater than or equal to freshness.warn_after_days"
+                        .into(),
+            });
         }
     }
 
@@ -604,11 +715,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        CONFIG_FILE, CoverageConfig, DOC_ROOT_DIR, DocInventoryConfig, ImpactLayout,
-        LoadedCoverageConfig, LoadedDocInventoryConfig, LoadedRule, RequiredDoc, Rule, Trigger,
-        detect_impact_layout, load_coverage_configs, load_doc_inventory_configs, load_impact_files,
-        normalize_path, resolve_rule_path, validate_loaded_coverage_configs,
-        validate_loaded_doc_inventory_configs, validate_loaded_rules,
+        CONFIG_FILE, CoverageConfig, DOC_ROOT_DIR, DocInventoryConfig, FreshnessConfig,
+        ImpactLayout, LoadedCoverageConfig, LoadedDocInventoryConfig, LoadedFreshnessConfig,
+        LoadedRule, RequiredDoc, Rule, Trigger, detect_impact_layout, load_coverage_configs,
+        load_doc_inventory_configs, load_freshness_configs, load_impact_files, normalize_path,
+        resolve_rule_path, validate_loaded_coverage_configs, validate_loaded_doc_inventory_configs,
+        validate_loaded_freshness_configs, validate_loaded_rules,
     };
 
     fn temp_dir(prefix: &str) -> PathBuf {
@@ -869,6 +981,81 @@ rules: []
                 .iter()
                 .any(|message| message.contains("coverage.exclude[0] must not contain `.` or `..`"))
         );
+    }
+
+    #[test]
+    fn load_freshness_configs_resolves_workspace_entries() {
+        let root = temp_dir("docpact-load-freshness");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("root doc dir");
+        fs::create_dir_all(root.join(format!("subrepo/{DOC_ROOT_DIR}"))).expect("subrepo doc dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+lastReviewedAt: "2026-04-18"
+lastReviewedCommit: "abc"
+freshness:
+  warn_after_commits: 21
+  warn_after_days: 34
+  critical_after_days: 55
+rules: []
+"#,
+        )
+        .expect("root config");
+
+        fs::write(
+            root.join(format!("subrepo/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+lastReviewedAt: "2026-04-18"
+lastReviewedCommit: "abc"
+freshness:
+  warn_after_commits: 13
+  warn_after_days: 21
+  critical_after_days: 42
+repo:
+  id: subrepo
+rules: []
+"#,
+        )
+        .expect("subrepo config");
+
+        let loaded = load_freshness_configs(&root, None).expect("freshness configs should load");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].freshness.warn_after_commits, 21);
+        assert_eq!(loaded[1].base_dir, "subrepo");
+        assert_eq!(loaded[1].freshness.critical_after_days, 42);
+    }
+
+    #[test]
+    fn strict_validation_reports_invalid_freshness_thresholds() {
+        let loaded = vec![LoadedFreshnessConfig {
+            source: ".docpact/config.yaml".into(),
+            base_dir: String::new(),
+            freshness: FreshnessConfig {
+                warn_after_commits: 0,
+                warn_after_days: 30,
+                critical_after_days: 20,
+            },
+        }];
+
+        let problems = validate_loaded_freshness_configs(&loaded);
+        let messages = problems
+            .iter()
+            .map(|problem| problem.message.clone())
+            .collect::<Vec<_>>();
+
+        assert!(messages.iter().any(|message| {
+            message.contains("freshness.warn_after_commits must be greater than 0")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains(
+                "freshness.critical_after_days must be greater than or equal to freshness.warn_after_days"
+            )
+        }));
     }
 
     #[test]
