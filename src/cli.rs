@@ -42,6 +42,12 @@ pub struct CheckArgs {
     pub mode: LintMode,
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub format: OutputFormat,
+    #[arg(long, value_enum, default_value_t = DiagnosticDetail::Compact)]
+    pub detail: DiagnosticDetail,
+    #[arg(long, default_value_t = 1, value_parser = parse_positive_usize)]
+    pub diagnostics_page: usize,
+    #[arg(long, default_value_t = 5, value_parser = parse_positive_usize)]
+    pub diagnostics_page_size: usize,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -76,11 +82,36 @@ pub enum OutputFormat {
     Sarif,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DiagnosticDetail {
+    Summary,
+    Compact,
+    Full,
+}
+
+impl DiagnosticDetail {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Summary => "summary",
+            Self::Compact => "compact",
+            Self::Full => "full",
+        }
+    }
+}
+
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    match value.parse::<usize>() {
+        Ok(0) => Err("value must be greater than 0".into()),
+        Ok(parsed) => Ok(parsed),
+        Err(_) => Err(format!("invalid positive integer: {value}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, Commands, LintMode, OutputFormat};
+    use super::{Cli, Commands, DiagnosticDetail, LintMode, OutputFormat};
 
     #[test]
     fn parses_check_command() {
@@ -95,6 +126,12 @@ mod tests {
             "enforce",
             "--format",
             "json",
+            "--detail",
+            "full",
+            "--diagnostics-page",
+            "2",
+            "--diagnostics-page-size",
+            "9",
         ])
         .expect("cli should parse");
 
@@ -104,6 +141,9 @@ mod tests {
                 assert_eq!(args.head.as_deref(), Some("def456"));
                 assert_eq!(args.mode, LintMode::Enforce);
                 assert_eq!(args.format, OutputFormat::Json);
+                assert_eq!(args.detail, DiagnosticDetail::Full);
+                assert_eq!(args.diagnostics_page, 2);
+                assert_eq!(args.diagnostics_page_size, 9);
             }
             _ => panic!("expected check command"),
         }
