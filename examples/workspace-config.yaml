@@ -1,0 +1,25 @@
+version: 1
+layout: workspace
+lastReviewedAt: 2026-04-20
+lastReviewedCommit: example-workspace-config
+workspace:
+  name: sample-workspace
+  repos:
+    - id: sample-sdk
+      path: sample-sdk
+      owner: sample-sdk
+rules:
+  - id: workspace-branch-policy
+    scope: workspace
+    repo: sample-workspace
+    triggers:
+      - path: docs/branch-policy.md
+        kind: doc-contract
+      - path: .github/workflows/**
+        kind: automation
+    requiredDocs:
+      - path: AGENTS.md
+        mode: review_or_update
+      - path: .ai-doc-lint/config.yaml
+        mode: review_or_update
+    reason: Root workflow and branch policy changes alter root guidance and validation expectations.

@@ -1,0 +1,25 @@
+version: 1
+layout: repo
+lastReviewedAt: 2026-04-20
+lastReviewedCommit: example-repo-config
+repo:
+  id: sample-sdk
+  owner: sample-sdk
+  runtime: node
+rules:
+  - id: api-surface
+    scope: repo
+    repo: sample-sdk
+    triggers:
+      - path: src/api/**
+        kind: code
+      - path: src/commands/**
+        kind: code
+    requiredDocs:
+      - path: README.md
+        mode: review_or_update
+      - path: .ai-doc-lint/config.yaml
+        mode: review_or_update
+      - path: docs/api.md
+        mode: body_update_required
+    reason: User-facing API and command changes must refresh the repo contract and public docs.

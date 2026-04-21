@@ -1,0 +1,10 @@
+name: sample-ci
+
+on:
+  pull_request:
+
+jobs:
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "sample workflow"

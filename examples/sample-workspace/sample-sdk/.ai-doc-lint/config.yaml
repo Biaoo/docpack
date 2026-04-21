@@ -1,0 +1,51 @@
+lastReviewedAt: 2026-04-20
+lastReviewedCommit: example-sample-sdk
+version: 1
+layout: repo
+repo:
+  id: sample-sdk
+  owner: sample-sdk
+  runtime: node
+rules:
+  - id: sample-sdk-bootstrap
+    scope: repo
+    repo: sample-sdk
+    triggers:
+      - path: AGENTS.md
+        kind: doc-contract
+      - path: README.md
+        kind: doc-entry
+      - path: .ai-doc-lint/**
+        kind: doc-ai-layer
+    requiredDocs:
+      - path: AGENTS.md
+        mode: review_or_update
+      - path: .ai-doc-lint/config.yaml
+        mode: review_or_update
+    reason: Repo entry guidance and AI routing docs must stay aligned.
+  - id: sample-sdk-api-surface
+    scope: repo
+    repo: sample-sdk
+    triggers:
+      - path: src/api/**
+        kind: code
+    requiredDocs:
+      - path: README.md
+        mode: review_or_update
+      - path: .ai-doc-lint/config.yaml
+        mode: review_or_update
+      - path: docs/api.md
+        mode: review_or_update
+    reason: API changes alter both the user-facing README and the repo-local contract.
+  - id: sample-sdk-command-surface
+    scope: repo
+    repo: sample-sdk
+    triggers:
+      - path: src/commands/**
+        kind: code
+    requiredDocs:
+      - path: README.md
+        mode: review_or_update
+      - path: .ai-doc-lint/config.yaml
+        mode: review_or_update
+    reason: Command changes alter user entrypoints and validation expectations.

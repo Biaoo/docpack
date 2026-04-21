@@ -1,0 +1,14 @@
+[package]
+name = "ai-doc-lint"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "A Rust-first scaffold for a diff-driven documentation drift gate for AI-assisted teams."
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.5.53", features = ["derive"] }
+miette = { version = "7.6.0", features = ["fancy"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+yaml_serde = "0.10.4"
