@@ -2,6 +2,12 @@ version: 1
 layout: workspace
 lastReviewedAt: 2026-04-20
 lastReviewedCommit: example-workspace-config
+coverage:
+  include:
+    - docs/**
+    - .github/**
+  exclude:
+    - vendor/**
 workspace:
   name: sample-workspace
   repos:

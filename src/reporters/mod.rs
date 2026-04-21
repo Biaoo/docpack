@@ -10,6 +10,7 @@ pub const SARIF_SCHEMA_URI: &str =
 pub const DIAGNOSTICS_SCHEMA_VERSION: &str = "docpact.diagnostics.v1";
 
 const METADATA_RULE_ID: &str = "metadata-review-fields";
+const UNCOVERED_CHANGE_RULE_ID: &str = "coverage-uncovered-change";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Problem {
@@ -38,6 +39,8 @@ pub struct DiagnosticsArtifact {
     pub status: String,
     pub changed_paths: Vec<String>,
     pub matched_rule_count: usize,
+    pub uncovered_changed_paths: Vec<String>,
+    pub coverage_status: String,
     pub summary: ArtifactSummary,
     pub diagnostics: Vec<DiagnosticRecord>,
 }
@@ -54,6 +57,8 @@ pub struct Report {
     pub status: String,
     pub changed_paths: Vec<String>,
     pub matched_rule_count: usize,
+    pub uncovered_changed_paths: Vec<String>,
+    pub coverage_status: String,
     pub detail: String,
     pub summary: ReportSummary,
     pub items: Vec<DiagnosticItem>,
@@ -208,6 +213,10 @@ pub struct SarifProperties {
     pub changed_paths: Vec<String>,
     #[serde(rename = "matchedRuleCount")]
     pub matched_rule_count: usize,
+    #[serde(rename = "uncoveredChangedPaths")]
+    pub uncovered_changed_paths: Vec<String>,
+    #[serde(rename = "coverageStatus")]
+    pub coverage_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -246,6 +255,23 @@ impl Problem {
         }
     }
 
+    pub fn uncovered_change(path: String) -> Self {
+        Self {
+            problem_type: "uncovered-change".into(),
+            path: path.clone(),
+            message: format!(
+                "Changed path is not covered by any docpact rule trigger. Add a matching rule or exclude it from coverage: {path}."
+            ),
+            rule_id: UNCOVERED_CHANGE_RULE_ID.into(),
+            required_mode: None,
+            failure_reason: "unmatched_changed_path".into(),
+            suggested_action: "add_rule_or_exclude_path".into(),
+            rule_source: None,
+            trigger_paths: Vec::new(),
+            rule_reason: None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn missing_review(
         path: String,
@@ -276,7 +302,8 @@ impl Problem {
         match self.problem_type.as_str() {
             "missing-review" => 0,
             "missing-metadata" => 1,
-            _ => 2,
+            "uncovered-change" => 2,
+            _ => 3,
         }
     }
 }
@@ -417,6 +444,11 @@ pub fn build_diagnostics_artifact(
 
     let mut counts_by_type = BTreeMap::new();
     let mut counts_by_rule = BTreeMap::new();
+    let uncovered_changed_paths = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.problem_type == "uncovered-change")
+        .map(|diagnostic| diagnostic.path.clone())
+        .collect::<Vec<_>>();
     for diagnostic in &diagnostics {
         *counts_by_type
             .entry(diagnostic.problem_type.clone())
@@ -448,6 +480,12 @@ pub fn build_diagnostics_artifact(
         },
         changed_paths: changed_paths.to_vec(),
         matched_rule_count,
+        uncovered_changed_paths: uncovered_changed_paths.clone(),
+        coverage_status: if uncovered_changed_paths.is_empty() {
+            "ok".into()
+        } else {
+            "has-uncovered-change".into()
+        },
         summary: ArtifactSummary {
             total_count: diagnostics.len(),
             counts_by_type,
@@ -481,6 +519,8 @@ pub fn build_report_from_artifact(
         status: artifact.status.clone(),
         changed_paths: artifact.changed_paths.clone(),
         matched_rule_count: artifact.matched_rule_count,
+        uncovered_changed_paths: artifact.uncovered_changed_paths.clone(),
+        coverage_status: artifact.coverage_status.clone(),
         detail: detail.as_str().into(),
         summary: paged.summary.clone(),
         items: paged.items,
@@ -544,6 +584,8 @@ pub fn build_sarif_log_from_artifact(artifact: &DiagnosticsArtifact, mode: LintM
                 status: artifact.status.clone(),
                 changed_paths: artifact.changed_paths.clone(),
                 matched_rule_count: artifact.matched_rule_count,
+                uncovered_changed_paths: artifact.uncovered_changed_paths.clone(),
+                coverage_status: artifact.coverage_status.clone(),
             }),
         }],
     }
@@ -607,10 +649,12 @@ fn emit_text_report(report: &Report, mode: LintMode) {
 
     println!("{heading}");
     println!(
-        "Summary: total={}, counts_by_type={}, top_rules={}, page={}/{}, page_size={}",
+        "Summary: total={}, counts_by_type={}, top_rules={}, coverage_status={}, uncovered={}, page={}/{}, page_size={}",
         report.total_count,
         format_counts_by_type(&report.summary.counts_by_type),
         format_top_rules(&report.summary.top_rules),
+        report.coverage_status,
+        report.uncovered_changed_paths.len(),
         report.page,
         report.total_pages,
         report.page_size,
@@ -713,6 +757,16 @@ fn sarif_rules(mode: LintMode) -> Vec<SarifRule> {
             short_description: SarifMessage {
                 text: "A touched key document is missing required review metadata.".into(),
             },
+            default_configuration: SarifDefaultConfiguration {
+                level: level.clone(),
+            },
+            help_uri: None,
+        },
+        SarifRule {
+            id: UNCOVERED_CHANGE_RULE_ID.into(),
+            short_description: SarifMessage {
+                text: "A changed path was not covered by any docpact rule trigger.".into(),
+            },
             default_configuration: SarifDefaultConfiguration { level },
             help_uri: None,
         },
@@ -723,6 +777,7 @@ fn sarif_rule_id(problem: &DiagnosticRecord) -> &'static str {
     match problem.problem_type.as_str() {
         "missing-review" => "missing-review",
         "missing-metadata" => METADATA_RULE_ID,
+        "uncovered-change" => UNCOVERED_CHANGE_RULE_ID,
         _ => "unknown-problem",
     }
 }
@@ -816,6 +871,10 @@ mod tests {
         )
     }
 
+    fn uncovered_problem(path: &str) -> Problem {
+        Problem::uncovered_change(path.into())
+    }
+
     #[test]
     fn build_report_marks_empty_run_as_ok() {
         let report = build_report(&[], &[], 0, DiagnosticDetail::Compact, 1, 5);
@@ -843,6 +902,29 @@ mod tests {
             artifact.diagnostics[0].rule_reason.as_deref(),
             Some("repo rationale")
         );
+    }
+
+    #[test]
+    fn build_artifact_includes_coverage_summary_fields() {
+        let artifact = build_diagnostics_artifact(
+            &[
+                review_problem(
+                    "docs/api.md",
+                    "repo-rule",
+                    "review_or_update",
+                    "required_doc_not_touched",
+                ),
+                uncovered_problem("src/payments/charge.ts"),
+            ],
+            &["src/payments/charge.ts".into(), "src/api/client.ts".into()],
+            1,
+        );
+
+        assert_eq!(
+            artifact.uncovered_changed_paths,
+            vec!["src/payments/charge.ts"]
+        );
+        assert_eq!(artifact.coverage_status, "has-uncovered-change");
     }
 
     #[test]
@@ -989,7 +1071,7 @@ mod tests {
         assert_eq!(sarif.version, "2.1.0");
         assert_eq!(sarif.runs.len(), 1);
         assert!(sarif.runs[0].results.is_empty());
-        assert_eq!(sarif.runs[0].tool.driver.rules.len(), 2);
+        assert_eq!(sarif.runs[0].tool.driver.rules.len(), 3);
         assert_eq!(
             sarif.runs[0].properties.as_ref().map(|p| p.status.as_str()),
             Some("ok")
@@ -1070,6 +1152,33 @@ mod tests {
                 .as_ref()
                 .map(|p| p.diagnostic_id.as_str()),
             Some("d002")
+        );
+    }
+
+    #[test]
+    fn build_sarif_log_exposes_coverage_status_and_uncovered_paths() {
+        let problems = vec![uncovered_problem("src/payments/charge.ts")];
+
+        let sarif = build_sarif_log(
+            &problems,
+            &["src/payments/charge.ts".into(), "src/api/client.ts".into()],
+            0,
+            LintMode::Warn,
+        );
+        let run = &sarif.runs[0];
+
+        assert_eq!(run.results[0].rule_id, "coverage-uncovered-change");
+        assert_eq!(
+            run.properties
+                .as_ref()
+                .map(|properties| properties.coverage_status.as_str()),
+            Some("has-uncovered-change")
+        );
+        assert_eq!(
+            run.properties
+                .as_ref()
+                .map(|properties| properties.uncovered_changed_paths.clone()),
+            Some(vec!["src/payments/charge.ts".into()])
         );
     }
 }

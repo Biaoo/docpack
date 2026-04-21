@@ -33,7 +33,17 @@ enum ConfigLayout {
 struct ConfigFile {
     layout: ConfigLayout,
     #[serde(default)]
+    coverage: CoverageConfig,
+    #[serde(default)]
     rules: Vec<Rule>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct CoverageConfig {
+    #[serde(default)]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -72,6 +82,13 @@ pub struct LoadedRule {
     pub source: String,
     pub base_dir: String,
     pub rule: Rule,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedCoverageConfig {
+    pub source: String,
+    pub base_dir: String,
+    pub coverage: CoverageConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,6 +256,24 @@ pub fn load_impact_files(
     Ok(loaded)
 }
 
+pub fn load_coverage_configs(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<LoadedCoverageConfig>> {
+    let mut loaded = Vec::new();
+
+    for descriptor in list_impact_files(root_dir, config_override)? {
+        let parsed = load_config_file(&descriptor.abs_path, &descriptor.rel_path)?;
+        loaded.push(LoadedCoverageConfig {
+            source: descriptor.rel_path,
+            base_dir: descriptor.base_dir,
+            coverage: parsed.coverage,
+        });
+    }
+
+    Ok(loaded)
+}
+
 pub fn validate_loaded_rules(loaded_rules: &[LoadedRule]) -> Vec<ConfigValidationProblem> {
     let mut problems = Vec::new();
     let mut rule_sources = BTreeMap::<String, Vec<&LoadedRule>>::new();
@@ -289,6 +324,44 @@ pub fn validate_loaded_rules(loaded_rules: &[LoadedRule]) -> Vec<ConfigValidatio
             &right.message,
         ))
     });
+    problems
+}
+
+pub fn validate_loaded_coverage_configs(
+    loaded_configs: &[LoadedCoverageConfig],
+) -> Vec<ConfigValidationProblem> {
+    let mut problems = Vec::new();
+
+    for loaded in loaded_configs {
+        for (index, pattern) in loaded.coverage.include.iter().enumerate() {
+            if let Some(message) = validate_trigger_path(pattern) {
+                problems.push(ConfigValidationProblem {
+                    source: loaded.source.clone(),
+                    rule_id: None,
+                    message: format!("coverage.include[{index}] {message}"),
+                });
+            }
+        }
+
+        for (index, pattern) in loaded.coverage.exclude.iter().enumerate() {
+            if let Some(message) = validate_trigger_path(pattern) {
+                problems.push(ConfigValidationProblem {
+                    source: loaded.source.clone(),
+                    rule_id: None,
+                    message: format!("coverage.exclude[{index}] {message}"),
+                });
+            }
+        }
+    }
+
+    problems.sort_by(|left, right| {
+        (&left.source, &left.rule_id, &left.message).cmp(&(
+            &right.source,
+            &right.rule_id,
+            &right.message,
+        ))
+    });
+
     problems
 }
 
@@ -458,9 +531,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        CONFIG_FILE, DOC_ROOT_DIR, ImpactLayout, LoadedRule, RequiredDoc, Rule, Trigger,
-        detect_impact_layout, load_impact_files, normalize_path, resolve_rule_path,
-        validate_loaded_rules,
+        CONFIG_FILE, CoverageConfig, DOC_ROOT_DIR, ImpactLayout, LoadedCoverageConfig, LoadedRule,
+        RequiredDoc, Rule, Trigger, detect_impact_layout, load_coverage_configs, load_impact_files,
+        normalize_path, resolve_rule_path, validate_loaded_coverage_configs, validate_loaded_rules,
     };
 
     fn temp_dir(prefix: &str) -> PathBuf {
@@ -640,6 +713,86 @@ rules:
             messages
                 .iter()
                 .any(|message| message.contains("rule must define at least one required doc"))
+        );
+    }
+
+    #[test]
+    fn load_coverage_configs_resolves_workspace_entries() {
+        let root = temp_dir("docpact-load-coverage");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("root doc dir");
+        fs::create_dir_all(root.join(format!("subrepo/{DOC_ROOT_DIR}"))).expect("subrepo doc dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+lastReviewedAt: "2026-04-18"
+lastReviewedCommit: "abc"
+coverage:
+  include:
+    - docs/**
+  exclude:
+    - vendor/**
+workspace:
+  name: demo
+rules: []
+"#,
+        )
+        .expect("root config");
+
+        fs::write(
+            root.join(format!("subrepo/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+lastReviewedAt: "2026-04-18"
+lastReviewedCommit: "abc"
+coverage:
+  include:
+    - src/**
+  exclude:
+    - dist/**
+repo:
+  id: subrepo
+rules: []
+"#,
+        )
+        .expect("subrepo config");
+
+        let loaded = load_coverage_configs(&root, None).expect("coverage configs should load");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].coverage.include, vec!["docs/**".to_string()]);
+        assert_eq!(loaded[1].base_dir, "subrepo");
+        assert_eq!(loaded[1].coverage.exclude, vec!["dist/**".to_string()]);
+    }
+
+    #[test]
+    fn strict_validation_reports_invalid_coverage_patterns() {
+        let loaded = vec![LoadedCoverageConfig {
+            source: ".docpact/config.yaml".into(),
+            base_dir: String::new(),
+            coverage: CoverageConfig {
+                include: vec!["src/***".into()],
+                exclude: vec!["..".into()],
+            },
+        }];
+
+        let problems = validate_loaded_coverage_configs(&loaded);
+        let messages = problems
+            .iter()
+            .map(|problem| problem.message.clone())
+            .collect::<Vec<_>>();
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("coverage.include[0] contains malformed glob"))
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("coverage.exclude[0] must not contain `.` or `..`"))
         );
     }
 }

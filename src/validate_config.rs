@@ -2,11 +2,15 @@ use miette::Result;
 
 use crate::AppExit;
 use crate::cli::ValidateConfigArgs;
-use crate::config::{load_impact_files, root_dir_from_option, validate_loaded_rules};
+use crate::config::{
+    load_coverage_configs, load_impact_files, root_dir_from_option,
+    validate_loaded_coverage_configs, validate_loaded_rules,
+};
 
 pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
     let root_dir = root_dir_from_option(args.root.as_deref())?;
     let rules = load_impact_files(&root_dir, args.config.as_deref())?;
+    let coverage_configs = load_coverage_configs(&root_dir, args.config.as_deref())?;
 
     if !args.strict {
         println!(
@@ -16,7 +20,15 @@ pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
         return Ok(AppExit::Success);
     }
 
-    let problems = validate_loaded_rules(&rules);
+    let mut problems = validate_loaded_rules(&rules);
+    problems.extend(validate_loaded_coverage_configs(&coverage_configs));
+    problems.sort_by(|left, right| {
+        (&left.source, &left.rule_id, &left.message).cmp(&(
+            &right.source,
+            &right.rule_id,
+            &right.message,
+        ))
+    });
     if problems.is_empty() {
         println!(
             "Docpact strict config validation passed: {} rule(s).",

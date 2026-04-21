@@ -2,6 +2,13 @@ version: 1
 layout: repo
 lastReviewedAt: 2026-04-20
 lastReviewedCommit: example-repo-config
+coverage:
+  include:
+    - src/**
+    - docs/**
+  exclude:
+    - dist/**
+    - vendor/**
 repo:
   id: sample-sdk
   owner: sample-sdk

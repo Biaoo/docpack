@@ -6,7 +6,10 @@ use yaml_serde::Value;
 
 use crate::AppExit;
 use crate::cli::LintArgs;
-use crate::config::{load_yaml_value, parse_yaml_value, resolve_rule_path, root_dir_from_option};
+use crate::config::{
+    LoadedCoverageConfig, load_coverage_configs, load_yaml_value, parse_yaml_value,
+    resolve_rule_path, root_dir_from_option,
+};
 use crate::diagnostics::{
     display_report_path, resolve_report_output_path, write_diagnostics_artifact,
 };
@@ -16,7 +19,7 @@ use crate::metadata::{
     missing_yaml_review_metadata_from_value, parse_frontmatter_scalar_values,
 };
 use crate::reporters::{Problem, build_diagnostics_artifact, emit_lint_output, emit_report_hint};
-use crate::rules::{MatchedRule, RequiredDocMode, match_rules};
+use crate::rules::{MatchedRule, RequiredDocMode, match_rules, matches_pattern};
 
 #[derive(Debug, Clone)]
 pub struct CheckRun {
@@ -54,7 +57,14 @@ pub fn run(args: LintArgs) -> Result<AppExit> {
         });
     emit_report_hint(args.format, &display_path, drilldown_id);
 
-    if args.mode == crate::cli::LintMode::Enforce && !artifact.diagnostics.is_empty() {
+    let has_uncovered_change = artifact
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.problem_type == "uncovered-change");
+
+    if (args.mode == crate::cli::LintMode::Enforce && !artifact.diagnostics.is_empty())
+        || (args.fail_on_uncovered_change && has_uncovered_change)
+    {
         Ok(AppExit::LintFailure)
     } else {
         Ok(AppExit::Success)
@@ -73,7 +83,10 @@ pub fn execute(args: &LintArgs) -> Result<CheckRun> {
     }
 
     let loaded_rules = crate::config::load_impact_files(&root_dir, args.config.as_deref())?;
+    let loaded_coverage_configs = load_coverage_configs(&root_dir, args.config.as_deref())?;
     let matched_rules = match_rules(&changed_paths, &loaded_rules);
+    let uncovered_changed_paths =
+        collect_uncovered_changed_paths(&changed_paths, &matched_rules, &loaded_coverage_configs);
     let mut problems =
         build_required_doc_problems(&root_dir, args, &changed_paths, &matched_rules)?;
     let governed_required_docs = collect_governed_required_doc_paths(&matched_rules);
@@ -82,6 +95,11 @@ pub fn execute(args: &LintArgs) -> Result<CheckRun> {
         &changed_paths,
         &governed_required_docs,
     )?);
+    problems.extend(
+        uncovered_changed_paths
+            .into_iter()
+            .map(Problem::uncovered_change),
+    );
 
     Ok(CheckRun {
         problems,
@@ -262,6 +280,62 @@ fn collect_governed_required_doc_paths(matched_rules: &[MatchedRule]) -> BTreeSe
     governed
 }
 
+fn collect_uncovered_changed_paths(
+    changed_paths: &[String],
+    matched_rules: &[MatchedRule],
+    loaded_coverage_configs: &[LoadedCoverageConfig],
+) -> Vec<String> {
+    let matched = matched_rules
+        .iter()
+        .map(|entry| entry.changed_path.as_str())
+        .collect::<HashSet<_>>();
+
+    changed_paths
+        .iter()
+        .filter(|path| path_in_coverage_scope(path, loaded_coverage_configs))
+        .filter(|path| !matched.contains(path.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn path_in_coverage_scope(path: &str, loaded_coverage_configs: &[LoadedCoverageConfig]) -> bool {
+    if matches_any_coverage_pattern(path, loaded_coverage_configs, CoverageSelector::Exclude) {
+        return false;
+    }
+
+    let has_include = loaded_coverage_configs
+        .iter()
+        .any(|loaded| !loaded.coverage.include.is_empty());
+    if !has_include {
+        return true;
+    }
+
+    matches_any_coverage_pattern(path, loaded_coverage_configs, CoverageSelector::Include)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoverageSelector {
+    Include,
+    Exclude,
+}
+
+fn matches_any_coverage_pattern(
+    path: &str,
+    loaded_coverage_configs: &[LoadedCoverageConfig],
+    selector: CoverageSelector,
+) -> bool {
+    loaded_coverage_configs.iter().any(|loaded| {
+        let patterns = match selector {
+            CoverageSelector::Include => &loaded.coverage.include,
+            CoverageSelector::Exclude => &loaded.coverage.exclude,
+        };
+
+        patterns
+            .iter()
+            .any(|pattern| matches_pattern(path, &resolve_rule_path(&loaded.base_dir, pattern)))
+    })
+}
+
 fn metadata_refresh_satisfied(root_dir: &Path, args: &LintArgs, rel_path: &str) -> Result<bool> {
     let comparison = get_file_comparison(root_dir, args, rel_path)?;
 
@@ -392,7 +466,7 @@ mod tests {
     use crate::config::{RequiredDoc, Rule, Trigger};
     use crate::rules::{MatchedRule, RequiredDocMode};
 
-    use super::{build_required_doc_problems, execute};
+    use super::{build_required_doc_problems, execute, run};
 
     fn temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -419,6 +493,7 @@ mod tests {
             detail: crate::cli::DiagnosticDetail::Compact,
             diagnostics_page: 1,
             diagnostics_page_size: 5,
+            fail_on_uncovered_change: false,
             output: None,
         }
     }
@@ -455,6 +530,9 @@ version: 1
 layout: repo
 lastReviewedAt: "2026-04-18"
 lastReviewedCommit: "abc"
+coverage:
+  include:
+    - src/**
 repo:
   id: example
 rules:
@@ -489,6 +567,188 @@ rules:
         assert_eq!(run.problems.len(), 2);
         assert_eq!(run.problems[0].problem_type, "missing-review");
         assert_eq!(run.problems[1].problem_type, "missing-metadata");
+    }
+
+    #[test]
+    fn execute_reports_uncovered_change_with_include_and_exclude() {
+        let root = temp_dir("docpact-check-coverage");
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/api")).expect("src api dir");
+        fs::create_dir_all(root.join("src/payments")).expect("src payments dir");
+        fs::create_dir_all(root.join("src/generated")).expect("src generated dir");
+        fs::create_dir_all(root.join("docs")).expect("docs dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+lastReviewedAt: "2026-04-18"
+lastReviewedCommit: "abc"
+coverage:
+  include:
+    - src/**
+  exclude:
+    - src/generated/**
+repo:
+  id: example
+rules:
+  - id: api-rule
+    scope: repo
+    repo: example
+    triggers:
+      - path: src/api/**
+        kind: code
+    requiredDocs:
+      - path: docs/api.md
+        mode: review_or_update
+    reason: repo
+"#,
+        )
+        .expect("impact config");
+
+        fs::write(root.join("src/api/client.ts"), "export const api = 1;\n").expect("api file");
+        fs::write(
+            root.join("src/payments/charge.ts"),
+            "export const charge = 1;\n",
+        )
+        .expect("payments file");
+        fs::write(
+            root.join("src/generated/schema.ts"),
+            "export const generated = 1;\n",
+        )
+        .expect("generated file");
+        fs::write(root.join("docs/api.md"), "# API\n").expect("doc");
+
+        let mut args = base_args(root);
+        args.files =
+            Some("src/api/client.ts,src/payments/charge.ts,src/generated/schema.ts".into());
+
+        let run = execute(&args).expect("lint should execute");
+        let uncovered = run
+            .problems
+            .iter()
+            .filter(|problem| problem.problem_type == "uncovered-change")
+            .map(|problem| problem.path.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(uncovered, vec!["src/payments/charge.ts".to_string()]);
+    }
+
+    #[test]
+    fn execute_uses_workspace_relative_coverage_patterns() {
+        let root = temp_dir("docpact-check-coverage-workspace");
+        fs::create_dir_all(root.join(".docpact")).expect("root doc dir");
+        fs::create_dir_all(root.join("subrepo/.docpact")).expect("subrepo doc dir");
+        fs::create_dir_all(root.join("subrepo/src/api")).expect("subrepo api dir");
+        fs::create_dir_all(root.join("subrepo/src/payments")).expect("subrepo payments dir");
+        fs::create_dir_all(root.join("subrepo/docs")).expect("subrepo docs dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: workspace
+lastReviewedAt: "2026-04-18"
+lastReviewedCommit: "abc"
+workspace:
+  name: demo
+rules: []
+"#,
+        )
+        .expect("root config");
+
+        fs::write(
+            root.join("subrepo/.docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+lastReviewedAt: "2026-04-18"
+lastReviewedCommit: "abc"
+coverage:
+  include:
+    - src/**
+repo:
+  id: subrepo
+rules:
+  - id: repo-rule
+    scope: repo
+    repo: subrepo
+    triggers:
+      - path: src/api/**
+        kind: code
+    requiredDocs:
+      - path: docs/api.md
+        mode: review_or_update
+    reason: repo
+"#,
+        )
+        .expect("subrepo config");
+
+        fs::write(
+            root.join("subrepo/src/api/client.ts"),
+            "export const api = 1;\n",
+        )
+        .expect("api file");
+        fs::write(
+            root.join("subrepo/src/payments/charge.ts"),
+            "export const charge = 1;\n",
+        )
+        .expect("payments file");
+        fs::write(root.join("subrepo/docs/api.md"), "# API\n").expect("doc");
+
+        let mut args = base_args(root);
+        args.files = Some("subrepo/src/api/client.ts,subrepo/src/payments/charge.ts".into());
+
+        let run = execute(&args).expect("lint should execute");
+        let uncovered = run
+            .problems
+            .iter()
+            .filter(|problem| problem.problem_type == "uncovered-change")
+            .map(|problem| problem.path.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            uncovered,
+            vec!["subrepo/src/payments/charge.ts".to_string()]
+        );
+    }
+
+    #[test]
+    fn fail_on_uncovered_change_returns_lint_failure_in_warn_mode() {
+        let root = temp_dir("docpact-check-fail-on-uncovered");
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/payments")).expect("src dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+lastReviewedAt: "2026-04-18"
+lastReviewedCommit: "abc"
+coverage:
+  include:
+    - src/**
+repo:
+  id: example
+rules: []
+"#,
+        )
+        .expect("impact config");
+
+        fs::write(
+            root.join("src/payments/charge.ts"),
+            "export const charge = 1;\n",
+        )
+        .expect("payments file");
+
+        let mut args = base_args(root);
+        args.files = Some("src/payments/charge.ts".into());
+        args.fail_on_uncovered_change = true;
+
+        let exit = run(args).expect("lint should execute");
+        assert_eq!(exit, crate::AppExit::LintFailure);
     }
 
     #[test]
@@ -542,6 +802,9 @@ version: 1
 layout: repo
 lastReviewedAt: "2026-04-21"
 lastReviewedCommit: "base"
+coverage:
+  include:
+    - src/**
 repo:
   id: example
 rules:
@@ -643,6 +906,9 @@ version: 1
 layout: repo
 lastReviewedAt: "2026-04-21"
 lastReviewedCommit: "base"
+coverage:
+  include:
+    - src/**
 repo:
   id: example
 rules:
@@ -740,6 +1006,9 @@ version: 1
 layout: repo
 lastReviewedAt: "2026-04-21"
 lastReviewedCommit: "base"
+coverage:
+  include:
+    - src/**
 repo:
   id: example
 rules:
