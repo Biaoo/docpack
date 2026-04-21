@@ -5,7 +5,7 @@ use std::process::Command;
 
 use miette::{IntoDiagnostic, Result, bail, miette};
 
-use crate::cli::CheckArgs;
+use crate::cli::LintArgs;
 use crate::config::normalize_path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +23,7 @@ pub struct FileComparison {
     pub current: Option<String>,
 }
 
-pub fn get_changed_paths(root_dir: &Path, args: &CheckArgs) -> Result<Vec<String>> {
+pub fn get_changed_paths(root_dir: &Path, args: &LintArgs) -> Result<Vec<String>> {
     if let Some(files) = &args.files {
         let values = files
             .split(',')
@@ -63,7 +63,7 @@ pub fn get_changed_paths(root_dir: &Path, args: &CheckArgs) -> Result<Vec<String
 
 pub fn get_file_comparison(
     root_dir: &Path,
-    args: &CheckArgs,
+    args: &LintArgs,
     rel_path: &str,
 ) -> Result<FileComparison> {
     let rel_path = normalize_path(rel_path);

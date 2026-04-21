@@ -1,6 +1,6 @@
-# ai-doc-lint
+# docpact
 
-`ai-doc-lint` is a Rust-first standalone CLI for diff-driven AI documentation drift checks.
+`docpact` is a Rust-first standalone CLI for diff-driven AI documentation drift checks.
 
 It is meant to be installed as a CLI and used in local workflows and CI.
 
@@ -18,12 +18,12 @@ Install from source for now:
 cargo install --path .
 ```
 
-Create `.ai-doc-lint/config.yaml` in the target repository, then run:
+Create `.docpact/config.yaml` in the target repository, then run:
 
 ```bash
-ai-doc-lint validate-config --root /path/to/repo
-ai-doc-lint validate-config --root /path/to/repo --strict
-ai-doc-lint check --root /path/to/repo --files src/api/client.ts,README.md
+docpact validate-config --root /path/to/repo
+docpact validate-config --root /path/to/repo --strict
+docpact lint --root /path/to/repo --files src/api/client.ts,README.md
 ```
 
 For a full setup guide, start with [../docs/README.md](../docs/README.md).
@@ -43,7 +43,7 @@ For a full setup guide, start with [../docs/README.md](../docs/README.md).
 
 The new project also standardizes on one reserved config entrypoint:
 
-- `.ai-doc-lint/config.yaml`
+- `.docpact/config.yaml`
 
 ## Current State
 

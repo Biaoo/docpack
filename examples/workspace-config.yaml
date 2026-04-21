@@ -20,6 +20,6 @@ rules:
     requiredDocs:
       - path: AGENTS.md
         mode: review_or_update
-      - path: .ai-doc-lint/config.yaml
+      - path: .docpact/config.yaml
         mode: review_or_update
     reason: Root workflow and branch policy changes alter root guidance and validation expectations.

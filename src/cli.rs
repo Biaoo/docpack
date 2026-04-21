@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "ai-doc-lint",
+    name = "docpact",
     version,
     about = "Diff-driven documentation drift gate for AI-assisted teams."
 )]
@@ -15,13 +15,13 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    Check(CheckArgs),
+    Lint(LintArgs),
     Explain(ExplainArgs),
     ValidateConfig(ValidateConfigArgs),
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct CheckArgs {
+pub struct LintArgs {
     #[arg(long)]
     pub root: Option<PathBuf>,
     #[arg(long)]
@@ -114,10 +114,10 @@ mod tests {
     use super::{Cli, Commands, DiagnosticDetail, LintMode, OutputFormat};
 
     #[test]
-    fn parses_check_command() {
+    fn parses_lint_command() {
         let cli = Cli::try_parse_from([
-            "ai-doc-lint",
-            "check",
+            "docpact",
+            "lint",
             "--base",
             "abc123",
             "--head",
@@ -136,7 +136,7 @@ mod tests {
         .expect("cli should parse");
 
         match cli.command {
-            Commands::Check(args) => {
+            Commands::Lint(args) => {
                 assert_eq!(args.base.as_deref(), Some("abc123"));
                 assert_eq!(args.head.as_deref(), Some("def456"));
                 assert_eq!(args.mode, LintMode::Enforce);
@@ -145,13 +145,13 @@ mod tests {
                 assert_eq!(args.diagnostics_page, 2);
                 assert_eq!(args.diagnostics_page_size, 9);
             }
-            _ => panic!("expected check command"),
+            _ => panic!("expected lint command"),
         }
     }
 
     #[test]
     fn parses_validate_config_strict_flag() {
-        let cli = Cli::try_parse_from(["ai-doc-lint", "validate-config", "--strict"])
+        let cli = Cli::try_parse_from(["docpact", "validate-config", "--strict"])
             .expect("cli should parse");
 
         match cli.command {

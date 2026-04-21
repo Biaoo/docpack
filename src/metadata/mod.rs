@@ -26,7 +26,7 @@ pub const DEFAULT_YAML_METADATA_KEYS: &[&str] = &["lastReviewedAt", "lastReviewe
 pub const REVIEW_METADATA_KEYS: &[&str] = &["lastReviewedAt", "lastReviewedCommit"];
 
 fn is_under_doc_root(normalized: &str) -> bool {
-    normalized.starts_with(".ai-doc-lint/") || normalized.contains("/.ai-doc-lint/")
+    normalized.starts_with(".docpact/") || normalized.contains("/.docpact/")
 }
 
 pub fn is_key_markdown_doc(rel_path: &str) -> bool {
@@ -264,9 +264,9 @@ mod tests {
 
     #[test]
     fn key_markdown_doc_excludes_yaml_contract_files() {
-        assert!(is_key_markdown_doc(".ai-doc-lint/quality-rubric.md"));
+        assert!(is_key_markdown_doc(".docpact/quality-rubric.md"));
         assert!(is_key_markdown_doc("AGENTS.md"));
-        assert!(!is_key_markdown_doc(".ai-doc-lint/config.yaml"));
+        assert!(!is_key_markdown_doc(".docpact/config.yaml"));
     }
 
     #[test]
@@ -284,7 +284,7 @@ whenToUse:
 whenToUpdate:
   - y
 checkPaths:
-  - .ai-doc-lint/**
+  - .docpact/**
 lastReviewedAt: 2026-04-18
 ---
 
@@ -303,7 +303,7 @@ lastReviewedAt: 2026-04-18
 lastReviewedAt: "2026-04-18"
 "#;
         let missing =
-            missing_yaml_metadata(text, ".ai-doc-lint/example.yaml").expect("yaml should parse");
+            missing_yaml_metadata(text, ".docpact/example.yaml").expect("yaml should parse");
         assert_eq!(missing, vec!["lastReviewedCommit".to_string()]);
     }
 

@@ -1,6 +1,6 @@
 # sample-sdk
 
-This package is the repo-local example used by `ai-doc-lint`.
+This package is the repo-local example used by `docpact`.
 
 ## Code Areas
 
@@ -10,6 +10,6 @@ This package is the repo-local example used by `ai-doc-lint`.
 ## AI Docs
 
 - `AGENTS.md`
-- `.ai-doc-lint/config.yaml`
+- `.docpact/config.yaml`
 
-Changing `src/api/**` or `src/commands/**` should require touching the appropriate docs according to `.ai-doc-lint/config.yaml`.
+Changing `src/api/**` or `src/commands/**` should require touching the appropriate docs according to `.docpact/config.yaml`.

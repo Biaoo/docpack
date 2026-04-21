@@ -6,8 +6,8 @@ use miette::{IntoDiagnostic, Result, bail, miette};
 use serde::Deserialize;
 use yaml_serde::Value;
 
-pub const DOC_ROOT_DIR: &str = ".ai-doc-lint";
-pub const CONFIG_FILE: &str = ".ai-doc-lint/config.yaml";
+pub const DOC_ROOT_DIR: &str = ".docpact";
+pub const CONFIG_FILE: &str = ".docpact/config.yaml";
 pub const SUPPORTED_REQUIRED_DOC_MODES: &[&str] = &[
     "review_or_update",
     "metadata_refresh_required",
@@ -135,12 +135,8 @@ pub fn detect_impact_layout(
 }
 
 pub fn parse_yaml_value(text: &str, source_label: &str) -> Result<Value> {
-    yaml_serde::from_str::<Value>(text).map_err(|error| {
-        miette!(
-            "{source_label} is not valid YAML for ai-doc-lint. {}",
-            error
-        )
-    })
+    yaml_serde::from_str::<Value>(text)
+        .map_err(|error| miette!("{source_label} is not valid YAML for docpact. {}", error))
 }
 
 pub fn load_yaml_value(abs_path: &Path, source_label: &str) -> Result<Value> {
@@ -151,7 +147,7 @@ pub fn load_yaml_value(abs_path: &Path, source_label: &str) -> Result<Value> {
 fn load_config_file(abs_path: &Path, source_label: &str) -> Result<ConfigFile> {
     let text = fs::read_to_string(abs_path).into_diagnostic()?;
     yaml_serde::from_str::<ConfigFile>(&text)
-        .map_err(|error| miette!("{source_label} is not a valid ai-doc-lint config file. {error}"))
+        .map_err(|error| miette!("{source_label} is not a valid docpact config file. {error}"))
 }
 
 fn descriptor(abs_path: PathBuf, rel_path: String, base_dir: String) -> ImpactFileDescriptor {
@@ -487,7 +483,7 @@ mod tests {
 
     #[test]
     fn detect_impact_layout_distinguishes_workspace_and_repo_roots() {
-        let root = temp_dir("ai-doc-lint-layout");
+        let root = temp_dir("docpact-layout");
         fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root dir should exist");
 
         assert_eq!(
@@ -518,7 +514,7 @@ mod tests {
 
     #[test]
     fn load_impact_files_resolves_repo_local_paths() {
-        let root = temp_dir("ai-doc-lint-load");
+        let root = temp_dir("docpact-load");
         fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("root doc dir");
         fs::create_dir_all(root.join(format!("subrepo/{DOC_ROOT_DIR}"))).expect("subrepo doc dir");
 
@@ -539,7 +535,7 @@ rules:
       - path: AGENTS.md
         kind: doc-contract
     requiredDocs:
-      - path: .ai-doc-lint/config.yaml
+      - path: .docpact/config.yaml
         mode: review_or_update
     reason: root
 "#,
@@ -563,7 +559,7 @@ rules:
       - path: src/**
         kind: code
     requiredDocs:
-      - path: .ai-doc-lint/config.yaml
+      - path: .docpact/config.yaml
         mode: review_or_update
     reason: repo
 "#,
@@ -573,8 +569,8 @@ rules:
         let loaded = load_impact_files(&root, None).expect("impact files should load");
         assert_eq!(loaded.len(), 2);
         assert_eq!(
-            resolve_rule_path("subrepo", ".ai-doc-lint/config.yaml"),
-            "subrepo/.ai-doc-lint/config.yaml"
+            resolve_rule_path("subrepo", ".docpact/config.yaml"),
+            "subrepo/.docpact/config.yaml"
         );
     }
 
@@ -582,7 +578,7 @@ rules:
     fn strict_validation_reports_duplicate_ids_and_invalid_rule_shapes() {
         let loaded = vec![
             LoadedRule {
-                source: ".ai-doc-lint/config.yaml".into(),
+                source: ".docpact/config.yaml".into(),
                 base_dir: String::new(),
                 rule: Rule {
                     id: "duplicate-rule".into(),
@@ -600,7 +596,7 @@ rules:
                 },
             },
             LoadedRule {
-                source: "child/.ai-doc-lint/config.yaml".into(),
+                source: "child/.docpact/config.yaml".into(),
                 base_dir: "child".into(),
                 rule: Rule {
                     id: "duplicate-rule".into(),

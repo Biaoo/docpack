@@ -9,14 +9,14 @@ language: en
 whenToUse:
   - when working inside the sample-sdk package
   - when deciding whether a change belongs in API code, commands, or repo-local AI docs
-  - when demonstrating repo-level ai-doc-lint behavior
+  - when demonstrating repo-level docpact behavior
 whenToUpdate:
   - when repo ownership changes
   - when package-level routing changes
   - when validation expectations change
 checkPaths:
   - AGENTS.md
-  - .ai-doc-lint/config.yaml
+  - .docpact/config.yaml
   - src/api/**
   - src/commands/**
   - docs/**
@@ -31,9 +31,9 @@ This package is a small example repository embedded inside `sample-workspace`.
 ## Ownership
 
 - this package owns the TypeScript files under `src/`
-- this package owns the repo-local AI docs under `.ai-doc-lint/`
+- this package owns the repo-local AI docs under `.docpact/`
 
 ## Read Next
 
-1. `.ai-doc-lint/config.yaml`
+1. `.docpact/config.yaml`
 2. `docs/api.md`

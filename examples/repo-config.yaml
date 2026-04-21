@@ -18,7 +18,7 @@ rules:
     requiredDocs:
       - path: README.md
         mode: review_or_update
-      - path: .ai-doc-lint/config.yaml
+      - path: .docpact/config.yaml
         mode: review_or_update
       - path: docs/api.md
         mode: body_update_required

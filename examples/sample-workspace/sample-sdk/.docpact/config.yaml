@@ -15,12 +15,12 @@ rules:
         kind: doc-contract
       - path: README.md
         kind: doc-entry
-      - path: .ai-doc-lint/**
+      - path: .docpact/**
         kind: doc-ai-layer
     requiredDocs:
       - path: AGENTS.md
         mode: review_or_update
-      - path: .ai-doc-lint/config.yaml
+      - path: .docpact/config.yaml
         mode: review_or_update
     reason: Repo entry guidance and AI routing docs must stay aligned.
   - id: sample-sdk-api-surface
@@ -32,7 +32,7 @@ rules:
     requiredDocs:
       - path: README.md
         mode: review_or_update
-      - path: .ai-doc-lint/config.yaml
+      - path: .docpact/config.yaml
         mode: review_or_update
       - path: docs/api.md
         mode: review_or_update
@@ -46,6 +46,6 @@ rules:
     requiredDocs:
       - path: README.md
         mode: review_or_update
-      - path: .ai-doc-lint/config.yaml
+      - path: .docpact/config.yaml
         mode: review_or_update
     reason: Command changes alter user entrypoints and validation expectations.

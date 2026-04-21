@@ -20,7 +20,7 @@ pub enum AppExit {
 
 pub fn run(cli: Cli) -> Result<AppExit> {
     match cli.command {
-        Commands::Check(args) => check::run(args),
+        Commands::Lint(args) => check::run(args),
         Commands::Explain(args) => explain::run(args),
         Commands::ValidateConfig(args) => validate_config::run(args),
     }

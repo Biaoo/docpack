@@ -10,7 +10,7 @@ pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
 
     if !args.strict {
         println!(
-            "AI doc lint config loaded successfully: {} rule(s).",
+            "Docpact config loaded successfully: {} rule(s).",
             rules.len()
         );
         return Ok(AppExit::Success);
@@ -19,13 +19,13 @@ pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
     let problems = validate_loaded_rules(&rules);
     if problems.is_empty() {
         println!(
-            "AI doc lint strict config validation passed: {} rule(s).",
+            "Docpact strict config validation passed: {} rule(s).",
             rules.len()
         );
         return Ok(AppExit::Success);
     }
 
-    println!("AI doc lint found invalid config definitions:");
+    println!("Docpact found invalid config definitions:");
     for problem in problems {
         match problem.rule_id {
             Some(rule_id) => {
@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn strict_validate_config_returns_lint_failure_for_invalid_rules() {
-        let root = temp_dir("ai-doc-lint-validate-config");
+        let root = temp_dir("docpact-validate-config");
         fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root should exist");
 
         fs::write(
@@ -111,7 +111,7 @@ rules:
 
     #[test]
     fn non_strict_validate_config_remains_compatible() {
-        let root = temp_dir("ai-doc-lint-validate-config-compat");
+        let root = temp_dir("docpact-validate-config-compat");
         fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root should exist");
 
         fs::write(

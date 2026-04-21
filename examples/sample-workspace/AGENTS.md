@@ -9,14 +9,14 @@ language: en
 whenToUse:
   - when routing work from the workspace root
   - when deciding whether a change belongs in the sample workspace or in the sample-sdk package
-  - when demonstrating workspace-level ai-doc-lint behavior
+  - when demonstrating workspace-level docpact behavior
 whenToUpdate:
   - when workspace routing changes
   - when the package inventory changes
   - when root validation or review rules change
 checkPaths:
   - AGENTS.md
-  - .ai-doc-lint/config.yaml
+  - .docpact/config.yaml
   - docs/branch-policy.md
   - .github/workflows/**
   - sample-sdk/**
@@ -26,7 +26,7 @@ lastReviewedCommit: example-sample-workspace
 
 # Sample Workspace
 
-This workspace exists only as an `ai-doc-lint` example.
+This workspace exists only as an `docpact` example.
 
 ## Ownership
 
@@ -36,5 +36,5 @@ This workspace exists only as an `ai-doc-lint` example.
 ## Bootstrap Order
 
 1. read this file
-2. read `.ai-doc-lint/config.yaml`
+2. read `.docpact/config.yaml`
 3. enter `sample-sdk` only when the task clearly belongs to the SDK package

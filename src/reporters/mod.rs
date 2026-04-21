@@ -242,7 +242,7 @@ pub fn emit_no_changed_paths(
 ) {
     match format {
         OutputFormat::Text => {
-            println!("AI doc lint: no changed paths to inspect.");
+            println!("Docpact: no changed paths to inspect.");
         }
         OutputFormat::Json => {
             println!(
@@ -550,13 +550,13 @@ fn sarif_level(mode: LintMode) -> &'static str {
 
 fn emit_text_problems(report: &Report, mode: LintMode) {
     if report.total_count == 0 {
-        println!("AI doc lint: no problems found.");
+        println!("Docpact: no problems found.");
         return;
     }
 
     let heading = match mode {
-        LintMode::Enforce => "AI doc lint found blocking problems:",
-        LintMode::Warn => "AI doc lint found warnings:",
+        LintMode::Enforce => "Docpact found blocking problems:",
+        LintMode::Warn => "Docpact found warnings:",
     };
 
     println!("{heading}");
@@ -651,7 +651,7 @@ mod tests {
         Problem::missing_review(
             path.into(),
             rule_id.into(),
-            ".ai-doc-lint/config.yaml".into(),
+            ".docpact/config.yaml".into(),
             required_mode.into(),
             failure_reason.into(),
             "touch_required_doc".into(),
@@ -696,7 +696,7 @@ mod tests {
                 "required_doc_not_touched",
             ),
             Problem::missing_metadata(
-                ".ai-doc-lint/quality-rubric.md".into(),
+                ".docpact/quality-rubric.md".into(),
                 "Missing Markdown metadata keys: lastReviewedAt".into(),
             ),
             review_problem(
@@ -732,7 +732,7 @@ mod tests {
                 "required_doc_not_touched",
             ),
             Problem::missing_metadata(
-                ".ai-doc-lint/quality-rubric.md".into(),
+                ".docpact/quality-rubric.md".into(),
                 "Missing Markdown metadata keys: lastReviewedAt".into(),
             ),
             review_problem(
@@ -768,7 +768,7 @@ mod tests {
 
         assert_eq!(
             report.items[0].rule_source.as_deref(),
-            Some(".ai-doc-lint/config.yaml")
+            Some(".docpact/config.yaml")
         );
         assert_eq!(report.items[0].trigger_paths, vec!["src/index.ts"]);
     }

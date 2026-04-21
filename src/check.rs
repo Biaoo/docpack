@@ -5,7 +5,7 @@ use miette::Result;
 use yaml_serde::Value;
 
 use crate::AppExit;
-use crate::cli::CheckArgs;
+use crate::cli::LintArgs;
 use crate::config::{load_yaml_value, parse_yaml_value, resolve_rule_path, root_dir_from_option};
 use crate::git::{FileComparison, get_changed_paths, get_file_comparison};
 use crate::metadata::{
@@ -22,7 +22,7 @@ pub struct CheckRun {
     pub matched_rules: Vec<MatchedRule>,
 }
 
-pub fn run(args: CheckArgs) -> Result<AppExit> {
+pub fn run(args: LintArgs) -> Result<AppExit> {
     let run = execute(&args)?;
     if run.changed_paths.is_empty() {
         emit_no_changed_paths(
@@ -52,7 +52,7 @@ pub fn run(args: CheckArgs) -> Result<AppExit> {
     }
 }
 
-pub fn execute(args: &CheckArgs) -> Result<CheckRun> {
+pub fn execute(args: &LintArgs) -> Result<CheckRun> {
     let root_dir = root_dir_from_option(args.root.as_deref())?;
     let changed_paths = get_changed_paths(&root_dir, args)?;
     if changed_paths.is_empty() {
@@ -78,7 +78,7 @@ pub fn execute(args: &CheckArgs) -> Result<CheckRun> {
 
 pub fn build_required_doc_problems(
     root_dir: &Path,
-    args: &CheckArgs,
+    args: &LintArgs,
     changed_paths: &[String],
     matched_rules: &[MatchedRule],
 ) -> Result<Vec<Problem>> {
@@ -229,7 +229,7 @@ fn collect_required_problem_seeds(
     seeds
 }
 
-fn metadata_refresh_satisfied(root_dir: &Path, args: &CheckArgs, rel_path: &str) -> Result<bool> {
+fn metadata_refresh_satisfied(root_dir: &Path, args: &LintArgs, rel_path: &str) -> Result<bool> {
     let comparison = get_file_comparison(root_dir, args, rel_path)?;
 
     if is_markdown_path(rel_path) {
@@ -267,7 +267,7 @@ fn metadata_refresh_satisfied(root_dir: &Path, args: &CheckArgs, rel_path: &str)
     Ok(true)
 }
 
-fn body_update_satisfied(root_dir: &Path, args: &CheckArgs, rel_path: &str) -> Result<bool> {
+fn body_update_satisfied(root_dir: &Path, args: &LintArgs, rel_path: &str) -> Result<bool> {
     let comparison = get_file_comparison(root_dir, args, rel_path)?;
 
     if is_markdown_path(rel_path) {
@@ -355,7 +355,7 @@ mod tests {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::cli::{CheckArgs, LintMode, OutputFormat};
+    use crate::cli::{LintArgs, LintMode, OutputFormat};
     use crate::config::{RequiredDoc, Rule, Trigger};
     use crate::rules::{MatchedRule, RequiredDocMode};
 
@@ -371,8 +371,8 @@ mod tests {
         path
     }
 
-    fn base_args(root: PathBuf) -> CheckArgs {
-        CheckArgs {
+    fn base_args(root: PathBuf) -> LintArgs {
+        LintArgs {
             root: Some(root),
             config: None,
             base: None,
@@ -410,12 +410,12 @@ mod tests {
 
     #[test]
     fn execute_reports_missing_review_and_metadata() {
-        let root = temp_dir("ai-doc-lint-check");
-        fs::create_dir_all(root.join(".ai-doc-lint")).expect("doc dir");
+        let root = temp_dir("docpact-check");
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
         fs::create_dir_all(root.join("src")).expect("src dir");
 
         fs::write(
-            root.join(".ai-doc-lint/config.yaml"),
+            root.join(".docpact/config.yaml"),
             r#"
 version: 1
 layout: repo
@@ -431,7 +431,7 @@ rules:
       - path: src/**
         kind: code
     requiredDocs:
-      - path: .ai-doc-lint/config.yaml
+      - path: .docpact/config.yaml
         mode: review_or_update
     reason: repo
 "#,
@@ -440,15 +440,15 @@ rules:
 
         fs::write(root.join("src/index.ts"), "export const x = 1;\n").expect("source file");
         fs::write(
-            root.join(".ai-doc-lint/quality-rubric.md"),
+            root.join(".docpact/quality-rubric.md"),
             "# Missing frontmatter\n",
         )
         .expect("doc file");
 
         let mut args = base_args(root);
-        args.files = Some("src/index.ts,.ai-doc-lint/quality-rubric.md".into());
+        args.files = Some("src/index.ts,.docpact/quality-rubric.md".into());
 
-        let run = execute(&args).expect("check should execute");
+        let run = execute(&args).expect("lint should execute");
 
         assert_eq!(run.problems.len(), 2);
         assert_eq!(run.problems[0].problem_type, "missing-review");
@@ -457,13 +457,13 @@ rules:
 
     #[test]
     fn must_exist_mode_allows_untouched_existing_doc() {
-        let root = temp_dir("ai-doc-lint-check-must-exist");
-        fs::create_dir_all(root.join(".ai-doc-lint")).expect("doc dir");
+        let root = temp_dir("docpact-check-must-exist");
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
         fs::write(root.join("README.md"), "# Present\n").expect("readme");
 
         let matched = vec![MatchedRule {
             changed_path: "src/index.ts".into(),
-            source: ".ai-doc-lint/config.yaml".into(),
+            source: ".docpact/config.yaml".into(),
             base_dir: String::new(),
             rule: Rule {
                 id: "repo-rule".into(),
@@ -493,14 +493,14 @@ rules:
 
     #[test]
     fn metadata_refresh_required_fails_when_review_metadata_does_not_change() {
-        let root = temp_dir("ai-doc-lint-check-metadata-mode");
+        let root = temp_dir("docpact-check-metadata-mode");
         init_git_repo(&root);
-        fs::create_dir_all(root.join(".ai-doc-lint")).expect("doc dir");
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
         fs::create_dir_all(root.join("docs")).expect("docs dir");
         fs::create_dir_all(root.join("src")).expect("src dir");
 
         fs::write(
-            root.join(".ai-doc-lint/config.yaml"),
+            root.join(".docpact/config.yaml"),
             r#"
 version: 1
 layout: repo
@@ -559,7 +559,7 @@ New body without metadata refresh
         let mut args = base_args(root);
         args.worktree = true;
 
-        let run = execute(&args).expect("check should execute");
+        let run = execute(&args).expect("lint should execute");
         assert_eq!(run.problems.len(), 1);
         assert!(
             run.problems[0]
@@ -570,14 +570,14 @@ New body without metadata refresh
 
     #[test]
     fn body_update_required_fails_for_metadata_only_change() {
-        let root = temp_dir("ai-doc-lint-check-body-mode");
+        let root = temp_dir("docpact-check-body-mode");
         init_git_repo(&root);
-        fs::create_dir_all(root.join(".ai-doc-lint")).expect("doc dir");
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
         fs::create_dir_all(root.join("docs")).expect("docs dir");
         fs::create_dir_all(root.join("src")).expect("src dir");
 
         fs::write(
-            root.join(".ai-doc-lint/config.yaml"),
+            root.join(".docpact/config.yaml"),
             r#"
 version: 1
 layout: repo
@@ -636,21 +636,21 @@ Stable body
         let mut args = base_args(root);
         args.worktree = true;
 
-        let run = execute(&args).expect("check should execute");
+        let run = execute(&args).expect("lint should execute");
         assert_eq!(run.problems.len(), 1);
         assert!(run.problems[0].message.contains("body was not updated"));
     }
 
     #[test]
     fn body_update_required_passes_when_body_changes() {
-        let root = temp_dir("ai-doc-lint-check-body-pass");
+        let root = temp_dir("docpact-check-body-pass");
         init_git_repo(&root);
-        fs::create_dir_all(root.join(".ai-doc-lint")).expect("doc dir");
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
         fs::create_dir_all(root.join("docs")).expect("docs dir");
         fs::create_dir_all(root.join("src")).expect("src dir");
 
         fs::write(
-            root.join(".ai-doc-lint/config.yaml"),
+            root.join(".docpact/config.yaml"),
             r#"
 version: 1
 layout: repo
@@ -709,7 +709,7 @@ Updated body
         let mut args = base_args(root);
         args.worktree = true;
 
-        let run = execute(&args).expect("check should execute");
+        let run = execute(&args).expect("lint should execute");
         assert!(run.problems.is_empty());
     }
 }

@@ -176,20 +176,17 @@ mod tests {
             "tiangong-lca-next/**"
         ));
         assert!(matches_pattern(
-            ".ai-doc-lint/quality-rubric.md",
-            ".ai-doc-lint/*.md"
+            ".docpact/quality-rubric.md",
+            ".docpact/*.md"
         ));
-        assert!(!matches_pattern(
-            ".ai-doc-lint/nested/file.md",
-            ".ai-doc-lint/*.md"
-        ));
+        assert!(!matches_pattern(".docpact/nested/file.md", ".docpact/*.md"));
     }
 
     #[test]
     fn matching_and_expected_docs_resolve_repo_paths() {
         let loaded = vec![
             LoadedRule {
-                source: ".ai-doc-lint/config.yaml".into(),
+                source: ".docpact/config.yaml".into(),
                 base_dir: String::new(),
                 rule: Rule {
                     id: "root-rule".into(),
@@ -200,14 +197,14 @@ mod tests {
                         kind: Some("doc-contract".into()),
                     }],
                     required_docs: vec![RequiredDoc {
-                        path: ".ai-doc-lint/config.yaml".into(),
+                        path: ".docpact/config.yaml".into(),
                         mode: Some("review_or_update".into()),
                     }],
                     reason: "root".into(),
                 },
             },
             LoadedRule {
-                source: "subrepo/.ai-doc-lint/config.yaml".into(),
+                source: "subrepo/.docpact/config.yaml".into(),
                 base_dir: "subrepo".into(),
                 rule: Rule {
                     id: "repo-rule".into(),
@@ -218,7 +215,7 @@ mod tests {
                         kind: Some("code".into()),
                     }],
                     required_docs: vec![RequiredDoc {
-                        path: ".ai-doc-lint/config.yaml".into(),
+                        path: ".docpact/config.yaml".into(),
                         mode: Some("review_or_update".into()),
                     }],
                     reason: "repo".into(),
@@ -236,12 +233,12 @@ mod tests {
         assert_eq!(
             expected.keys().cloned().collect::<Vec<_>>(),
             vec![
-                ".ai-doc-lint/config.yaml".to_string(),
-                "subrepo/.ai-doc-lint/config.yaml".to_string()
+                ".docpact/config.yaml".to_string(),
+                "subrepo/.docpact/config.yaml".to_string()
             ]
         );
         assert_eq!(
-            expected[".ai-doc-lint/config.yaml"].modes,
+            expected[".docpact/config.yaml"].modes,
             [RequiredDocMode::ReviewOrUpdate].into_iter().collect()
         );
     }
