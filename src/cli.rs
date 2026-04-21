@@ -17,6 +17,7 @@ pub struct Cli {
 pub enum Commands {
     Lint(LintArgs),
     ListRules(ListRulesArgs),
+    Doctor(DoctorArgs),
     Coverage(CoverageArgs),
     Freshness(FreshnessArgs),
     Diagnostics(DiagnosticsArgs),
@@ -79,6 +80,16 @@ pub struct ListRulesArgs {
     pub config: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = ListRulesOutputFormat::Text)]
     pub format: ListRulesOutputFormat,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct DoctorArgs {
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = DoctorOutputFormat::Text)]
+    pub format: DoctorOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -180,6 +191,12 @@ pub enum ListRulesOutputFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DoctorOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CoverageOutputFormat {
     Text,
     Json,
@@ -266,8 +283,8 @@ mod tests {
 
     use super::{
         Cli, Commands, CoverageOutputFormat, DiagnosticDetail, DiagnosticsCommands,
-        DiagnosticsOutputFormat, FreshnessOutputFormat, LintMode, ListRulesOutputFormat,
-        OutputFormat, ReviewCommands, ReviewOutputFormat,
+        DiagnosticsOutputFormat, DoctorOutputFormat, FreshnessOutputFormat, LintMode,
+        ListRulesOutputFormat, OutputFormat, ReviewCommands, ReviewOutputFormat,
     };
 
     #[test]
@@ -371,6 +388,20 @@ mod tests {
                 assert_eq!(args.format, ListRulesOutputFormat::Json);
             }
             _ => panic!("expected list-rules command"),
+        }
+    }
+
+    #[test]
+    fn parses_doctor_command() {
+        let cli = Cli::try_parse_from(["docpact", "doctor", "--root", ".", "--format", "json"])
+            .expect("cli should parse");
+
+        match cli.command {
+            Commands::Doctor(args) => {
+                assert_eq!(args.root.as_deref(), Some(std::path::Path::new(".")));
+                assert_eq!(args.format, DoctorOutputFormat::Json);
+            }
+            _ => panic!("expected doctor command"),
         }
     }
 

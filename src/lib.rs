@@ -3,6 +3,7 @@ pub mod cli;
 pub mod config;
 pub mod coverage;
 pub mod diagnostics;
+pub mod doctor;
 pub mod explain;
 pub mod freshness;
 pub mod git;
@@ -27,6 +28,7 @@ pub fn run(cli: Cli) -> Result<AppExit> {
     match cli.command {
         Commands::Lint(args) => check::run(args),
         Commands::ListRules(args) => list_rules::run(args),
+        Commands::Doctor(args) => doctor::run(args),
         Commands::Coverage(args) => coverage::run(args),
         Commands::Freshness(args) => freshness::run(args),
         Commands::Diagnostics(args) => diagnostics::run(args),
