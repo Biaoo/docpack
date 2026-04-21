@@ -76,7 +76,12 @@ pub fn execute(args: &LintArgs) -> Result<CheckRun> {
     let matched_rules = match_rules(&changed_paths, &loaded_rules);
     let mut problems =
         build_required_doc_problems(&root_dir, args, &changed_paths, &matched_rules)?;
-    problems.extend(build_doc_problems(&root_dir, &changed_paths)?);
+    let governed_required_docs = collect_governed_required_doc_paths(&matched_rules);
+    problems.extend(build_doc_problems(
+        &root_dir,
+        &changed_paths,
+        &governed_required_docs,
+    )?);
 
     Ok(CheckRun {
         problems,
@@ -243,6 +248,18 @@ fn collect_required_problem_seeds(
     }
 
     seeds
+}
+
+fn collect_governed_required_doc_paths(matched_rules: &[MatchedRule]) -> BTreeSet<String> {
+    let mut governed = BTreeSet::new();
+
+    for matched in matched_rules {
+        for doc in &matched.rule.required_docs {
+            governed.insert(resolve_rule_path(&matched.base_dir, &doc.path));
+        }
+    }
+
+    governed
 }
 
 fn metadata_refresh_satisfied(root_dir: &Path, args: &LintArgs, rel_path: &str) -> Result<bool> {
@@ -450,6 +467,8 @@ rules:
     requiredDocs:
       - path: .docpact/config.yaml
         mode: review_or_update
+      - path: .docpact/quality-rubric.md
+        mode: review_or_update
     reason: repo
 "#,
         )
@@ -544,6 +563,18 @@ rules:
         fs::write(
             root.join("docs/api.md"),
             r#"---
+docType: contract
+scope: repo
+status: draft
+authoritative: true
+owner: example
+language: en
+whenToUse:
+  - api updates
+whenToUpdate:
+  - api changes
+checkPaths:
+  - src/**
 lastReviewedAt: 2026-04-20
 lastReviewedCommit: base
 ---
@@ -562,6 +593,18 @@ Old body
         fs::write(
             root.join("docs/api.md"),
             r#"---
+docType: contract
+scope: repo
+status: draft
+authoritative: true
+owner: example
+language: en
+whenToUse:
+  - api updates
+whenToUpdate:
+  - api changes
+checkPaths:
+  - src/**
 lastReviewedAt: 2026-04-20
 lastReviewedCommit: base
 ---
@@ -621,6 +664,18 @@ rules:
         fs::write(
             root.join("docs/api.md"),
             r#"---
+docType: contract
+scope: repo
+status: draft
+authoritative: true
+owner: example
+language: en
+whenToUse:
+  - api updates
+whenToUpdate:
+  - api changes
+checkPaths:
+  - src/**
 lastReviewedAt: 2026-04-20
 lastReviewedCommit: base
 ---
@@ -639,6 +694,18 @@ Stable body
         fs::write(
             root.join("docs/api.md"),
             r#"---
+docType: contract
+scope: repo
+status: draft
+authoritative: true
+owner: example
+language: en
+whenToUse:
+  - api updates
+whenToUpdate:
+  - api changes
+checkPaths:
+  - src/**
 lastReviewedAt: 2026-04-21
 lastReviewedCommit: head
 ---
@@ -694,6 +761,18 @@ rules:
         fs::write(
             root.join("docs/api.md"),
             r#"---
+docType: contract
+scope: repo
+status: draft
+authoritative: true
+owner: example
+language: en
+whenToUse:
+  - api updates
+whenToUpdate:
+  - api changes
+checkPaths:
+  - src/**
 lastReviewedAt: 2026-04-20
 lastReviewedCommit: base
 ---
@@ -712,6 +791,18 @@ Stable body
         fs::write(
             root.join("docs/api.md"),
             r#"---
+docType: contract
+scope: repo
+status: draft
+authoritative: true
+owner: example
+language: en
+whenToUse:
+  - api updates
+whenToUpdate:
+  - api changes
+checkPaths:
+  - src/**
 lastReviewedAt: 2026-04-21
 lastReviewedCommit: head
 ---

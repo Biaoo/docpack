@@ -17,6 +17,7 @@ pub struct Cli {
 pub enum Commands {
     Lint(LintArgs),
     Diagnostics(DiagnosticsArgs),
+    Review(ReviewArgs),
     Explain(ExplainArgs),
     ValidateConfig(ValidateConfigArgs),
 }
@@ -75,6 +76,35 @@ pub struct DiagnosticsShowArgs {
 }
 
 #[derive(Debug, Clone, Args)]
+pub struct ReviewArgs {
+    #[command(subcommand)]
+    pub command: ReviewCommands,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ReviewCommands {
+    Mark(ReviewMarkArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ReviewMarkArgs {
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    #[arg(long = "path")]
+    pub paths: Vec<PathBuf>,
+    #[arg(long)]
+    pub report: Option<PathBuf>,
+    #[arg(long)]
+    pub id: Option<String>,
+    #[arg(long, value_parser = parse_iso_date)]
+    pub date: Option<String>,
+    #[arg(long)]
+    pub commit: Option<String>,
+    #[arg(long, value_enum, default_value_t = ReviewOutputFormat::Text)]
+    pub format: ReviewOutputFormat,
+}
+
+#[derive(Debug, Clone, Args)]
 pub struct ExplainArgs {
     pub path: PathBuf,
     #[arg(long)]
@@ -113,6 +143,12 @@ pub enum DiagnosticsOutputFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ReviewOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DiagnosticDetail {
     Summary,
     Compact,
@@ -137,13 +173,45 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     }
 }
 
+fn parse_iso_date(value: &str) -> Result<String, String> {
+    if value.len() != 10 {
+        return Err(format!("invalid YYYY-MM-DD date: {value}"));
+    }
+
+    let bytes = value.as_bytes();
+    if bytes[4] != b'-' || bytes[7] != b'-' {
+        return Err(format!("invalid YYYY-MM-DD date: {value}"));
+    }
+
+    if !bytes
+        .iter()
+        .enumerate()
+        .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    {
+        return Err(format!("invalid YYYY-MM-DD date: {value}"));
+    }
+
+    let month = value[5..7]
+        .parse::<u8>()
+        .map_err(|_| format!("invalid YYYY-MM-DD date: {value}"))?;
+    let day = value[8..10]
+        .parse::<u8>()
+        .map_err(|_| format!("invalid YYYY-MM-DD date: {value}"))?;
+
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return Err(format!("invalid YYYY-MM-DD date: {value}"));
+    }
+
+    Ok(value.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
     use super::{
         Cli, Commands, DiagnosticDetail, DiagnosticsCommands, DiagnosticsOutputFormat, LintMode,
-        OutputFormat,
+        OutputFormat, ReviewCommands, ReviewOutputFormat,
     };
 
     #[test]
@@ -215,6 +283,67 @@ mod tests {
                 }
             },
             _ => panic!("expected diagnostics command"),
+        }
+    }
+
+    #[test]
+    fn parses_review_mark_path_command() {
+        let cli = Cli::try_parse_from([
+            "docpact",
+            "review",
+            "mark",
+            "--root",
+            ".",
+            "--path",
+            "docs/api.md",
+            "--path",
+            "AGENTS.md",
+            "--date",
+            "2026-04-21",
+            "--commit",
+            "abc123",
+            "--format",
+            "json",
+        ])
+        .expect("cli should parse");
+
+        match cli.command {
+            Commands::Review(args) => match args.command {
+                ReviewCommands::Mark(mark) => {
+                    assert_eq!(mark.paths.len(), 2);
+                    assert_eq!(mark.date.as_deref(), Some("2026-04-21"));
+                    assert_eq!(mark.commit.as_deref(), Some("abc123"));
+                    assert_eq!(mark.format, ReviewOutputFormat::Json);
+                }
+            },
+            _ => panic!("expected review command"),
+        }
+    }
+
+    #[test]
+    fn parses_review_mark_report_command() {
+        let cli = Cli::try_parse_from([
+            "docpact",
+            "review",
+            "mark",
+            "--report",
+            ".docpact/runs/latest.json",
+            "--id",
+            "d001",
+        ])
+        .expect("cli should parse");
+
+        match cli.command {
+            Commands::Review(args) => match args.command {
+                ReviewCommands::Mark(mark) => {
+                    assert_eq!(
+                        mark.report,
+                        Some(std::path::PathBuf::from(".docpact/runs/latest.json"))
+                    );
+                    assert_eq!(mark.id.as_deref(), Some("d001"));
+                }
+            },
+            _ => panic!("expected review command"),
         }
     }
 

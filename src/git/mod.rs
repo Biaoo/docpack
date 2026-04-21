@@ -61,6 +61,10 @@ pub fn get_changed_paths(root_dir: &Path, args: &LintArgs) -> Result<Vec<String>
     )
 }
 
+pub fn get_head_commit(root_dir: &Path) -> Result<String> {
+    git_stdout(root_dir, &["rev-parse", "HEAD"])
+}
+
 pub fn get_file_comparison(
     root_dir: &Path,
     args: &LintArgs,
