@@ -51,13 +51,23 @@ The new project also standardizes on one reserved config entrypoint:
 
 ## Current State
 
-This repository currently contains a working Phase 1 core:
+This repository now contains the current product core:
 
 - changed-path collection from explicit files or git diff sources
-- workspace/repo impact-rule loading
+- explicit repo/workspace config loading
+- explicit workspace profile inheritance and child overrides
 - trigger-to-required-doc matching
-- key Markdown and YAML metadata checks
+- Markdown and YAML metadata checks on governed required docs
+- diff coverage for uncovered changes
+- repository coverage audit
+- repository freshness audit
+- report-backed diagnostics drill-down
+- explicit review-evidence recording
+- baseline creation and application
+- waiver creation and application
+- list-rules and doctor inspection commands
+- official GitHub Action wrapper
 - warning vs blocking exit behavior
-- text and JSON-capable reporting surfaces
+- text, JSON, and SARIF-capable reporting surfaces
 
-It is not yet the full planned product. Higher-order drift detection, autofix, richer config validation, and broader ecosystem integrations remain future work.
+It is not yet the full planned product. Higher-order drift detection, ignore support, richer config validation, routing, and broader ecosystem integrations remain future work.
