@@ -1,6 +1,7 @@
 pub mod check;
 pub mod cli;
 pub mod config;
+pub mod diagnostics;
 pub mod explain;
 pub mod git;
 pub mod metadata;
@@ -21,6 +22,7 @@ pub enum AppExit {
 pub fn run(cli: Cli) -> Result<AppExit> {
     match cli.command {
         Commands::Lint(args) => check::run(args),
+        Commands::Diagnostics(args) => diagnostics::run(args),
         Commands::Explain(args) => explain::run(args),
         Commands::ValidateConfig(args) => validate_config::run(args),
     }

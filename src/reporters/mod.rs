@@ -1,16 +1,17 @@
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::cli::{DiagnosticDetail, LintMode, OutputFormat};
+use crate::cli::{DiagnosticDetail, DiagnosticsOutputFormat, LintMode, OutputFormat};
 
 pub const SUPPORTED_REPORTERS: &[&str] = &["text", "json", "sarif", "github"];
 pub const SARIF_SCHEMA_URI: &str =
     "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json";
+pub const DIAGNOSTICS_SCHEMA_VERSION: &str = "docpact.diagnostics.v1";
 
 const METADATA_RULE_ID: &str = "metadata-review-fields";
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Problem {
     #[serde(rename = "type")]
     pub problem_type: String,
@@ -25,9 +26,30 @@ pub struct Problem {
     pub rule_source: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trigger_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiagnosticsArtifact {
+    pub schema_version: String,
+    pub tool_name: String,
+    pub tool_version: String,
+    pub status: String,
+    pub changed_paths: Vec<String>,
+    pub matched_rule_count: usize,
+    pub summary: ArtifactSummary,
+    pub diagnostics: Vec<DiagnosticRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactSummary {
+    pub total_count: usize,
+    pub counts_by_type: BTreeMap<String, usize>,
+    pub top_rules: Vec<RuleCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Report {
     pub status: String,
     pub changed_paths: Vec<String>,
@@ -44,7 +66,7 @@ pub struct Report {
     pub next_page: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReportSummary {
     pub total_count: usize,
     pub counts_by_type: BTreeMap<String, usize>,
@@ -56,13 +78,13 @@ pub struct ReportSummary {
     pub next_page: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuleCount {
     pub rule_id: String,
     pub count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiagnosticItem {
     pub diagnostic_id: String,
     #[serde(rename = "type")]
@@ -79,7 +101,27 @@ pub struct DiagnosticItem {
     pub trigger_paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DiagnosticRecord {
+    pub diagnostic_id: String,
+    #[serde(rename = "type")]
+    pub problem_type: String,
+    pub path: String,
+    pub message: String,
+    pub rule_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_mode: Option<String>,
+    pub failure_reason: String,
+    pub suggested_action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trigger_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifLog {
     #[serde(rename = "$schema")]
     pub schema: String,
@@ -87,7 +129,7 @@ pub struct SarifLog {
     pub runs: Vec<SarifRun>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifRun {
     pub tool: SarifTool,
     pub results: Vec<SarifResult>,
@@ -95,12 +137,12 @@ pub struct SarifRun {
     pub properties: Option<SarifProperties>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifTool {
     pub driver: SarifDriver,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifDriver {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,7 +152,7 @@ pub struct SarifDriver {
     pub rules: Vec<SarifRule>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifRule {
     pub id: String,
     #[serde(rename = "shortDescription")]
@@ -121,12 +163,12 @@ pub struct SarifRule {
     pub help_uri: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifDefaultConfiguration {
     pub level: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifResult {
     #[serde(rename = "ruleId")]
     pub rule_id: String,
@@ -137,29 +179,29 @@ pub struct SarifResult {
     pub properties: Option<SarifResultProperties>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifLocation {
     #[serde(rename = "physicalLocation")]
     pub physical_location: SarifPhysicalLocation,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifPhysicalLocation {
     #[serde(rename = "artifactLocation")]
     pub artifact_location: SarifArtifactLocation,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifArtifactLocation {
     pub uri: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifMessage {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifProperties {
     pub status: String,
     #[serde(rename = "changedPaths")]
@@ -168,7 +210,7 @@ pub struct SarifProperties {
     pub matched_rule_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SarifResultProperties {
     #[serde(rename = "problemType")]
     pub problem_type: String,
@@ -198,6 +240,7 @@ impl Problem {
             suggested_action: "add_review_metadata".into(),
             rule_source: None,
             trigger_paths: Vec::new(),
+            rule_reason: None,
         }
     }
 
@@ -210,6 +253,7 @@ impl Problem {
         failure_reason: String,
         suggested_action: String,
         trigger_paths: Vec<String>,
+        rule_reason: String,
         message: String,
     ) -> Self {
         Self {
@@ -222,6 +266,7 @@ impl Problem {
             suggested_action,
             rule_source: Some(rule_source),
             trigger_paths,
+            rule_reason: Some(rule_reason),
         }
     }
 
@@ -234,159 +279,148 @@ impl Problem {
     }
 }
 
-pub fn emit_no_changed_paths(
-    format: OutputFormat,
-    detail: DiagnosticDetail,
-    page: usize,
-    page_size: usize,
-) {
-    match format {
-        OutputFormat::Text => {
-            println!("Docpact: no changed paths to inspect.");
-        }
-        OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&build_report(&[], &[], 0, detail, page, page_size))
-                    .expect("report should serialize")
-            );
-        }
-        OutputFormat::Sarif => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&build_sarif_log(&[], &[], 0, LintMode::Warn))
-                    .expect("sarif log should serialize")
-            );
+impl DiagnosticRecord {
+    fn to_item(&self, detail: DiagnosticDetail) -> DiagnosticItem {
+        DiagnosticItem {
+            diagnostic_id: self.diagnostic_id.clone(),
+            problem_type: self.problem_type.clone(),
+            path: self.path.clone(),
+            rule_id: self.rule_id.clone(),
+            required_mode: self.required_mode.clone(),
+            failure_reason: self.failure_reason.clone(),
+            suggested_action: self.suggested_action.clone(),
+            rule_source: (detail == DiagnosticDetail::Full)
+                .then(|| self.rule_source.clone())
+                .flatten(),
+            trigger_paths: if detail == DiagnosticDetail::Full {
+                self.trigger_paths.clone()
+            } else {
+                Vec::new()
+            },
         }
     }
 }
 
-pub fn emit_problems(
-    problems: &[Problem],
-    changed_paths: &[String],
-    matched_rule_count: usize,
+pub fn emit_lint_output(
+    artifact: &DiagnosticsArtifact,
     mode: LintMode,
     format: OutputFormat,
     detail: DiagnosticDetail,
     page: usize,
     page_size: usize,
-) {
+) -> Report {
+    let report = build_report_from_artifact(artifact, detail, page, page_size);
+
     match format {
         OutputFormat::Text => {
-            let report = build_report(
-                problems,
-                changed_paths,
-                matched_rule_count,
-                detail,
-                page,
-                page_size,
-            );
-            emit_text_problems(&report, mode);
-            emit_annotations(problems, mode);
+            if artifact.changed_paths.is_empty() {
+                println!("Docpact: no changed paths to inspect.");
+            } else {
+                emit_text_report(&report, mode);
+                emit_annotations(&artifact.diagnostics, mode);
+            }
         }
         OutputFormat::Json => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&build_report(
-                    problems,
-                    changed_paths,
-                    matched_rule_count,
-                    detail,
-                    page,
-                    page_size,
-                ))
-                .expect("report should serialize")
+                serde_json::to_string_pretty(&report).expect("report should serialize")
             );
-            emit_annotations(problems, mode);
         }
         OutputFormat::Sarif => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&build_sarif_log(
-                    problems,
-                    changed_paths,
-                    matched_rule_count,
-                    mode,
-                ))
-                .expect("sarif log should serialize")
+                serde_json::to_string_pretty(&build_sarif_log_from_artifact(artifact, mode))
+                    .expect("sarif log should serialize")
+            );
+        }
+    }
+
+    report
+}
+
+pub fn emit_diagnostic_show(record: &DiagnosticRecord, format: DiagnosticsOutputFormat) {
+    match format {
+        DiagnosticsOutputFormat::Text => {
+            println!("Diagnostic {}", record.diagnostic_id);
+            println!("type={}", record.problem_type);
+            println!("path={}", record.path);
+            println!("rule_id={}", record.rule_id);
+            println!(
+                "required_mode={}",
+                record.required_mode.as_deref().unwrap_or("n/a")
+            );
+            println!("failure_reason={}", record.failure_reason);
+            println!("suggested_action={}", record.suggested_action);
+            if let Some(rule_source) = &record.rule_source {
+                println!("rule_source={rule_source}");
+            }
+            if !record.trigger_paths.is_empty() {
+                println!("trigger_paths={}", record.trigger_paths.join(","));
+            }
+            if let Some(rule_reason) = &record.rule_reason {
+                println!("rule_reason={rule_reason}");
+            }
+            println!("message={}", record.message);
+        }
+        DiagnosticsOutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(record).expect("diagnostic should serialize")
             );
         }
     }
 }
 
-pub fn build_report(
-    problems: &[Problem],
-    changed_paths: &[String],
-    matched_rule_count: usize,
-    detail: DiagnosticDetail,
-    page: usize,
-    page_size: usize,
-) -> Report {
-    let paged = build_paginated_diagnostics(problems, detail, page, page_size);
-    let status = if problems.is_empty() { "ok" } else { "fail" };
-
-    Report {
-        status: status.into(),
-        changed_paths: changed_paths.to_vec(),
-        matched_rule_count,
-        detail: detail.as_str().into(),
-        summary: paged.summary.clone(),
-        items: paged.items,
-        page: paged.page,
-        page_size: paged.page_size,
-        total_count: paged.total_count,
-        total_pages: paged.total_pages,
-        has_next_page: paged.has_next_page,
-        next_page: paged.next_page,
+pub fn emit_report_hint(format: OutputFormat, report_path: &str, drilldown_id: Option<&str>) {
+    for line in report_hint_lines(report_path, drilldown_id) {
+        match format {
+            OutputFormat::Text => println!("{line}"),
+            OutputFormat::Json | OutputFormat::Sarif => eprintln!("{line}"),
+        }
     }
 }
 
-fn build_paginated_diagnostics(
-    problems: &[Problem],
-    detail: DiagnosticDetail,
-    requested_page: usize,
-    page_size: usize,
-) -> PaginatedDiagnostics {
-    let mut diagnostics = problems.to_vec();
-    diagnostics.sort_by(|left, right| {
-        (
-            left.severity_rank(),
-            &left.problem_type,
-            &left.rule_id,
-            &left.path,
-            &left.required_mode,
-            &left.failure_reason,
-            &left.rule_source,
-            &left.trigger_paths,
-            &left.message,
-        )
-            .cmp(&(
-                right.severity_rank(),
-                &right.problem_type,
-                &right.rule_id,
-                &right.path,
-                &right.required_mode,
-                &right.failure_reason,
-                &right.rule_source,
-                &right.trigger_paths,
-                &right.message,
-            ))
-    });
+pub fn report_hint_lines(report_path: &str, drilldown_id: Option<&str>) -> Vec<String> {
+    let mut lines = vec![format!("Detailed report saved to {report_path}")];
+    if let Some(id) = drilldown_id {
+        lines.push(format!(
+            "Use `docpact diagnostics show --report {report_path} --id {id}` for drill-down."
+        ));
+    }
+    lines
+}
 
-    let total_count = diagnostics.len();
-    let total_pages = usize::max(1, total_count.div_ceil(page_size));
-    let page = requested_page.min(total_pages);
-    let has_next_page = page < total_pages;
-    let next_page = has_next_page.then_some(page + 1);
+pub fn build_diagnostics_artifact(
+    problems: &[Problem],
+    changed_paths: &[String],
+    matched_rule_count: usize,
+) -> DiagnosticsArtifact {
+    let diagnostics = sorted_diagnostics(problems)
+        .into_iter()
+        .enumerate()
+        .map(|(index, problem)| DiagnosticRecord {
+            diagnostic_id: format!("d{:03}", index + 1),
+            problem_type: problem.problem_type,
+            path: problem.path,
+            message: problem.message,
+            rule_id: problem.rule_id,
+            required_mode: problem.required_mode,
+            failure_reason: problem.failure_reason,
+            suggested_action: problem.suggested_action,
+            rule_source: problem.rule_source,
+            trigger_paths: problem.trigger_paths,
+            rule_reason: problem.rule_reason,
+        })
+        .collect::<Vec<_>>();
 
     let mut counts_by_type = BTreeMap::new();
     let mut counts_by_rule = BTreeMap::new();
-    for problem in &diagnostics {
+    for diagnostic in &diagnostics {
         *counts_by_type
-            .entry(problem.problem_type.clone())
+            .entry(diagnostic.problem_type.clone())
             .or_insert(0usize) += 1;
         *counts_by_rule
-            .entry(problem.rule_id.clone())
+            .entry(diagnostic.rule_id.clone())
             .or_insert(0usize) += 1;
     }
 
@@ -401,6 +435,129 @@ fn build_paginated_diagnostics(
             .then_with(|| left.rule_id.cmp(&right.rule_id))
     });
 
+    DiagnosticsArtifact {
+        schema_version: DIAGNOSTICS_SCHEMA_VERSION.into(),
+        tool_name: env!("CARGO_PKG_NAME").into(),
+        tool_version: env!("CARGO_PKG_VERSION").into(),
+        status: if diagnostics.is_empty() {
+            "ok".into()
+        } else {
+            "fail".into()
+        },
+        changed_paths: changed_paths.to_vec(),
+        matched_rule_count,
+        summary: ArtifactSummary {
+            total_count: diagnostics.len(),
+            counts_by_type,
+            top_rules,
+        },
+        diagnostics,
+    }
+}
+
+pub fn build_report(
+    problems: &[Problem],
+    changed_paths: &[String],
+    matched_rule_count: usize,
+    detail: DiagnosticDetail,
+    page: usize,
+    page_size: usize,
+) -> Report {
+    let artifact = build_diagnostics_artifact(problems, changed_paths, matched_rule_count);
+    build_report_from_artifact(&artifact, detail, page, page_size)
+}
+
+pub fn build_report_from_artifact(
+    artifact: &DiagnosticsArtifact,
+    detail: DiagnosticDetail,
+    page: usize,
+    page_size: usize,
+) -> Report {
+    let paged = build_paginated_diagnostics(&artifact.diagnostics, detail, page, page_size);
+
+    Report {
+        status: artifact.status.clone(),
+        changed_paths: artifact.changed_paths.clone(),
+        matched_rule_count: artifact.matched_rule_count,
+        detail: detail.as_str().into(),
+        summary: paged.summary.clone(),
+        items: paged.items,
+        page: paged.page,
+        page_size: paged.page_size,
+        total_count: paged.total_count,
+        total_pages: paged.total_pages,
+        has_next_page: paged.has_next_page,
+        next_page: paged.next_page,
+    }
+}
+
+pub fn build_sarif_log(
+    problems: &[Problem],
+    changed_paths: &[String],
+    matched_rule_count: usize,
+    mode: LintMode,
+) -> SarifLog {
+    let artifact = build_diagnostics_artifact(problems, changed_paths, matched_rule_count);
+    build_sarif_log_from_artifact(&artifact, mode)
+}
+
+pub fn build_sarif_log_from_artifact(artifact: &DiagnosticsArtifact, mode: LintMode) -> SarifLog {
+    let level = sarif_level(mode).to_string();
+
+    SarifLog {
+        schema: SARIF_SCHEMA_URI.into(),
+        version: "2.1.0".into(),
+        runs: vec![SarifRun {
+            tool: SarifTool {
+                driver: SarifDriver {
+                    name: artifact.tool_name.clone(),
+                    version: Some(artifact.tool_version.clone()),
+                    information_uri: None,
+                    rules: sarif_rules(mode),
+                },
+            },
+            results: artifact
+                .diagnostics
+                .iter()
+                .map(|diagnostic| SarifResult {
+                    rule_id: sarif_rule_id(diagnostic).into(),
+                    level: level.clone(),
+                    message: SarifMessage {
+                        text: diagnostic.message.clone(),
+                    },
+                    locations: vec![SarifLocation {
+                        physical_location: SarifPhysicalLocation {
+                            artifact_location: SarifArtifactLocation {
+                                uri: diagnostic.path.clone(),
+                            },
+                        },
+                    }],
+                    properties: Some(SarifResultProperties {
+                        problem_type: diagnostic.problem_type.clone(),
+                    }),
+                })
+                .collect(),
+            properties: Some(SarifProperties {
+                status: artifact.status.clone(),
+                changed_paths: artifact.changed_paths.clone(),
+                matched_rule_count: artifact.matched_rule_count,
+            }),
+        }],
+    }
+}
+
+fn build_paginated_diagnostics(
+    diagnostics: &[DiagnosticRecord],
+    detail: DiagnosticDetail,
+    requested_page: usize,
+    page_size: usize,
+) -> PaginatedDiagnostics {
+    let total_count = diagnostics.len();
+    let total_pages = usize::max(1, total_count.div_ceil(page_size));
+    let page = requested_page.min(total_pages);
+    let has_next_page = page < total_pages;
+    let next_page = has_next_page.then_some(page + 1);
+
     let items = if detail == DiagnosticDetail::Summary || diagnostics.is_empty() {
         Vec::new()
     } else {
@@ -408,34 +565,14 @@ fn build_paginated_diagnostics(
         let end = usize::min(start + page_size, total_count);
         diagnostics[start..end]
             .iter()
-            .enumerate()
-            .map(|(offset, problem)| {
-                let index = start + offset + 1;
-                DiagnosticItem {
-                    diagnostic_id: format!("d{index:03}"),
-                    problem_type: problem.problem_type.clone(),
-                    path: problem.path.clone(),
-                    rule_id: problem.rule_id.clone(),
-                    required_mode: problem.required_mode.clone(),
-                    failure_reason: problem.failure_reason.clone(),
-                    suggested_action: problem.suggested_action.clone(),
-                    rule_source: (detail == DiagnosticDetail::Full)
-                        .then(|| problem.rule_source.clone())
-                        .flatten(),
-                    trigger_paths: if detail == DiagnosticDetail::Full {
-                        problem.trigger_paths.clone()
-                    } else {
-                        Vec::new()
-                    },
-                }
-            })
+            .map(|record| record.to_item(detail))
             .collect()
     };
 
     let summary = ReportSummary {
-        total_count,
-        counts_by_type,
-        top_rules,
+        total_count: artifact_total_count(diagnostics),
+        counts_by_type: counts_by_type(diagnostics),
+        top_rules: top_rules(diagnostics),
         page,
         total_pages,
         has_next_page,
@@ -454,101 +591,7 @@ fn build_paginated_diagnostics(
     }
 }
 
-pub fn build_sarif_log(
-    problems: &[Problem],
-    changed_paths: &[String],
-    matched_rule_count: usize,
-    mode: LintMode,
-) -> SarifLog {
-    let level = sarif_level(mode).to_string();
-
-    SarifLog {
-        schema: SARIF_SCHEMA_URI.into(),
-        version: "2.1.0".into(),
-        runs: vec![SarifRun {
-            tool: SarifTool {
-                driver: SarifDriver {
-                    name: env!("CARGO_PKG_NAME").into(),
-                    version: Some(env!("CARGO_PKG_VERSION").into()),
-                    information_uri: None,
-                    rules: sarif_rules(mode),
-                },
-            },
-            results: problems
-                .iter()
-                .map(|problem| SarifResult {
-                    rule_id: sarif_rule_id(problem).into(),
-                    level: level.clone(),
-                    message: SarifMessage {
-                        text: problem.message.clone(),
-                    },
-                    locations: vec![SarifLocation {
-                        physical_location: SarifPhysicalLocation {
-                            artifact_location: SarifArtifactLocation {
-                                uri: problem.path.clone(),
-                            },
-                        },
-                    }],
-                    properties: Some(SarifResultProperties {
-                        problem_type: problem.problem_type.clone(),
-                    }),
-                })
-                .collect(),
-            properties: Some(SarifProperties {
-                status: if problems.is_empty() {
-                    "ok".into()
-                } else {
-                    "fail".into()
-                },
-                changed_paths: changed_paths.to_vec(),
-                matched_rule_count,
-            }),
-        }],
-    }
-}
-
-fn sarif_rules(mode: LintMode) -> Vec<SarifRule> {
-    let level = sarif_level(mode).to_string();
-
-    vec![
-        SarifRule {
-            id: "missing-review".into(),
-            short_description: SarifMessage {
-                text: "A required reviewed document is missing or did not satisfy its required review mode."
-                    .into(),
-            },
-            default_configuration: SarifDefaultConfiguration {
-                level: level.clone(),
-            },
-            help_uri: None,
-        },
-        SarifRule {
-            id: METADATA_RULE_ID.into(),
-            short_description: SarifMessage {
-                text: "A touched key document is missing required review metadata.".into(),
-            },
-            default_configuration: SarifDefaultConfiguration { level },
-            help_uri: None,
-        },
-    ]
-}
-
-fn sarif_rule_id(problem: &Problem) -> &'static str {
-    match problem.problem_type.as_str() {
-        "missing-review" => "missing-review",
-        "missing-metadata" => METADATA_RULE_ID,
-        _ => "unknown-problem",
-    }
-}
-
-fn sarif_level(mode: LintMode) -> &'static str {
-    match mode {
-        LintMode::Enforce => "error",
-        LintMode::Warn => "warning",
-    }
-}
-
-fn emit_text_problems(report: &Report, mode: LintMode) {
+fn emit_text_report(report: &Report, mode: LintMode) {
     if report.total_count == 0 {
         println!("Docpact: no problems found.");
         return;
@@ -580,6 +623,111 @@ fn emit_text_problems(report: &Report, mode: LintMode) {
 
     for item in &report.items {
         println!("{}", format_item(item));
+    }
+}
+
+fn counts_by_type(diagnostics: &[DiagnosticRecord]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for diagnostic in diagnostics {
+        *counts
+            .entry(diagnostic.problem_type.clone())
+            .or_insert(0usize) += 1;
+    }
+    counts
+}
+
+fn top_rules(diagnostics: &[DiagnosticRecord]) -> Vec<RuleCount> {
+    let mut counts = BTreeMap::new();
+    for diagnostic in diagnostics {
+        *counts.entry(diagnostic.rule_id.clone()).or_insert(0usize) += 1;
+    }
+
+    let mut rules = counts
+        .into_iter()
+        .map(|(rule_id, count)| RuleCount { rule_id, count })
+        .collect::<Vec<_>>();
+    rules.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.rule_id.cmp(&right.rule_id))
+    });
+    rules
+}
+
+fn artifact_total_count(diagnostics: &[DiagnosticRecord]) -> usize {
+    diagnostics.len()
+}
+
+fn sorted_diagnostics(problems: &[Problem]) -> Vec<Problem> {
+    let mut diagnostics = problems.to_vec();
+    diagnostics.sort_by(|left, right| {
+        (
+            left.severity_rank(),
+            &left.problem_type,
+            &left.rule_id,
+            &left.path,
+            &left.required_mode,
+            &left.failure_reason,
+            &left.rule_source,
+            &left.trigger_paths,
+            &left.rule_reason,
+            &left.message,
+        )
+            .cmp(&(
+                right.severity_rank(),
+                &right.problem_type,
+                &right.rule_id,
+                &right.path,
+                &right.required_mode,
+                &right.failure_reason,
+                &right.rule_source,
+                &right.trigger_paths,
+                &right.rule_reason,
+                &right.message,
+            ))
+    });
+    diagnostics
+}
+
+fn sarif_rules(mode: LintMode) -> Vec<SarifRule> {
+    let level = sarif_level(mode).to_string();
+
+    vec![
+        SarifRule {
+            id: "missing-review".into(),
+            short_description: SarifMessage {
+                text: "A required reviewed document is missing or did not satisfy its required review mode."
+                    .into(),
+            },
+            default_configuration: SarifDefaultConfiguration {
+                level: level.clone(),
+            },
+            help_uri: None,
+        },
+        SarifRule {
+            id: METADATA_RULE_ID.into(),
+            short_description: SarifMessage {
+                text: "A touched key document is missing required review metadata.".into(),
+            },
+            default_configuration: SarifDefaultConfiguration { level },
+            help_uri: None,
+        },
+    ]
+}
+
+fn sarif_rule_id(problem: &DiagnosticRecord) -> &'static str {
+    match problem.problem_type.as_str() {
+        "missing-review" => "missing-review",
+        "missing-metadata" => METADATA_RULE_ID,
+        _ => "unknown-problem",
+    }
+}
+
+fn sarif_level(mode: LintMode) -> &'static str {
+    match mode {
+        LintMode::Enforce => "error",
+        LintMode::Warn => "warning",
     }
 }
 
@@ -621,7 +769,7 @@ fn format_item(item: &DiagnosticItem) -> String {
     parts.join(" ")
 }
 
-fn emit_annotations(problems: &[Problem], mode: LintMode) {
+fn emit_annotations(diagnostics: &[DiagnosticRecord], mode: LintMode) {
     if std::env::var_os("GITHUB_ACTIONS").is_none() {
         return;
     }
@@ -631,8 +779,8 @@ fn emit_annotations(problems: &[Problem], mode: LintMode) {
         LintMode::Warn => "warning",
     };
 
-    for problem in problems {
-        println!("::{level} file={}::{}", problem.path, problem.message);
+    for diagnostic in diagnostics {
+        println!("::{level} file={}::{}", diagnostic.path, diagnostic.message);
     }
 }
 
@@ -640,7 +788,10 @@ fn emit_annotations(problems: &[Problem], mode: LintMode) {
 mod tests {
     use crate::cli::{DiagnosticDetail, LintMode};
 
-    use super::{Problem, SARIF_SCHEMA_URI, build_report, build_sarif_log};
+    use super::{
+        DIAGNOSTICS_SCHEMA_VERSION, Problem, SARIF_SCHEMA_URI, build_diagnostics_artifact,
+        build_report, build_report_from_artifact, build_sarif_log, report_hint_lines,
+    };
 
     fn review_problem(
         path: &str,
@@ -656,6 +807,7 @@ mod tests {
             failure_reason.into(),
             "touch_required_doc".into(),
             vec!["src/index.ts".into()],
+            "repo rationale".into(),
             "missing review".into(),
         )
     }
@@ -666,6 +818,27 @@ mod tests {
         assert_eq!(report.status, "ok");
         assert!(report.items.is_empty());
         assert_eq!(report.total_pages, 1);
+    }
+
+    #[test]
+    fn build_artifact_uses_stable_ids_and_schema() {
+        let artifact = build_diagnostics_artifact(
+            &[review_problem(
+                "docs/api.md",
+                "repo-rule",
+                "review_or_update",
+                "required_doc_not_touched",
+            )],
+            &["src/index.ts".into()],
+            1,
+        );
+
+        assert_eq!(artifact.schema_version, DIAGNOSTICS_SCHEMA_VERSION);
+        assert_eq!(artifact.diagnostics[0].diagnostic_id, "d001");
+        assert_eq!(
+            artifact.diagnostics[0].rule_reason.as_deref(),
+            Some("repo rationale")
+        );
     }
 
     #[test]
@@ -723,27 +896,31 @@ mod tests {
     }
 
     #[test]
-    fn build_report_sorts_diagnostics_stably() {
-        let problems = vec![
-            review_problem(
-                "docs/z.md",
-                "z-rule",
-                "review_or_update",
-                "required_doc_not_touched",
-            ),
-            Problem::missing_metadata(
-                ".docpact/quality-rubric.md".into(),
-                "Missing Markdown metadata keys: lastReviewedAt".into(),
-            ),
-            review_problem(
-                "docs/a.md",
-                "a-rule",
-                "review_or_update",
-                "required_doc_not_touched",
-            ),
-        ];
+    fn build_report_from_artifact_sorts_diagnostics_stably() {
+        let artifact = build_diagnostics_artifact(
+            &[
+                review_problem(
+                    "docs/z.md",
+                    "z-rule",
+                    "review_or_update",
+                    "required_doc_not_touched",
+                ),
+                Problem::missing_metadata(
+                    ".docpact/quality-rubric.md".into(),
+                    "Missing Markdown metadata keys: lastReviewedAt".into(),
+                ),
+                review_problem(
+                    "docs/a.md",
+                    "a-rule",
+                    "review_or_update",
+                    "required_doc_not_touched",
+                ),
+            ],
+            &[],
+            1,
+        );
 
-        let report = build_report(&problems, &[], 1, DiagnosticDetail::Compact, 1, 5);
+        let report = build_report_from_artifact(&artifact, DiagnosticDetail::Compact, 1, 5);
         assert_eq!(report.items.len(), 3);
         assert_eq!(report.items[0].rule_id, "a-rule");
         assert_eq!(report.items[1].rule_id, "z-rule");
@@ -794,6 +971,14 @@ mod tests {
     }
 
     #[test]
+    fn report_hint_lines_include_drill_down_command() {
+        let lines = report_hint_lines(".docpact/runs/latest.json", Some("d001"));
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("docpact diagnostics show"));
+        assert!(lines[1].contains("--id d001"));
+    }
+
+    #[test]
     fn build_sarif_log_emits_valid_top_level_shape_for_empty_results() {
         let sarif = build_sarif_log(&[], &[], 0, LintMode::Warn);
         assert_eq!(sarif.schema, SARIF_SCHEMA_URI);
@@ -838,5 +1023,6 @@ mod tests {
             run.tool.driver.rules[0].default_configuration.level,
             "error"
         );
+        assert_eq!(run.tool.driver.name, "docpact");
     }
 }

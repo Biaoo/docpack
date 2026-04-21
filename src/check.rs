@@ -7,12 +7,15 @@ use yaml_serde::Value;
 use crate::AppExit;
 use crate::cli::LintArgs;
 use crate::config::{load_yaml_value, parse_yaml_value, resolve_rule_path, root_dir_from_option};
+use crate::diagnostics::{
+    display_report_path, resolve_report_output_path, write_diagnostics_artifact,
+};
 use crate::git::{FileComparison, get_changed_paths, get_file_comparison};
 use crate::metadata::{
     build_doc_problems, markdown_body, missing_markdown_review_metadata,
     missing_yaml_review_metadata_from_value, parse_frontmatter_scalar_values,
 };
-use crate::reporters::{Problem, emit_no_changed_paths, emit_problems};
+use crate::reporters::{Problem, build_diagnostics_artifact, emit_lint_output, emit_report_hint};
 use crate::rules::{MatchedRule, RequiredDocMode, match_rules};
 
 #[derive(Debug, Clone)]
@@ -24,28 +27,34 @@ pub struct CheckRun {
 
 pub fn run(args: LintArgs) -> Result<AppExit> {
     let run = execute(&args)?;
-    if run.changed_paths.is_empty() {
-        emit_no_changed_paths(
-            args.format,
-            args.detail,
-            args.diagnostics_page,
-            args.diagnostics_page_size,
-        );
-        return Ok(AppExit::Success);
-    }
+    let root_dir = root_dir_from_option(args.root.as_deref())?;
+    let artifact =
+        build_diagnostics_artifact(&run.problems, &run.changed_paths, run.matched_rules.len());
+    let report_path = resolve_report_output_path(&root_dir, args.output.as_deref())?;
+    write_diagnostics_artifact(&report_path, &artifact)?;
 
-    emit_problems(
-        &run.problems,
-        &run.changed_paths,
-        run.matched_rules.len(),
+    let report = emit_lint_output(
+        &artifact,
         args.mode,
         args.format,
         args.detail,
         args.diagnostics_page,
         args.diagnostics_page_size,
     );
+    let display_path = display_report_path(&report_path)?;
+    let drilldown_id = report
+        .items
+        .first()
+        .map(|item| item.diagnostic_id.as_str())
+        .or_else(|| {
+            artifact
+                .diagnostics
+                .first()
+                .map(|item| item.diagnostic_id.as_str())
+        });
+    emit_report_hint(args.format, &display_path, drilldown_id);
 
-    if args.mode == crate::cli::LintMode::Enforce && !run.problems.is_empty() {
+    if args.mode == crate::cli::LintMode::Enforce && !artifact.diagnostics.is_empty() {
         Ok(AppExit::LintFailure)
     } else {
         Ok(AppExit::Success)
@@ -97,6 +106,7 @@ pub fn build_required_doc_problems(
                 "required_doc_missing".into(),
                 "create_required_doc".into(),
                 seed.trigger_paths.iter().cloned().collect(),
+                seed.rule_reason.clone(),
                 format!(
                     "Required doc does not exist for mode `must_exist`. Triggered by {} via rule `{}`.",
                     join_sorted(&seed.trigger_paths),
@@ -112,6 +122,7 @@ pub fn build_required_doc_problems(
                 "required_doc_not_touched".into(),
                 "touch_required_doc".into(),
                 seed.trigger_paths.iter().cloned().collect(),
+                seed.rule_reason.clone(),
                 format!(
                     "Required doc was not touched for mode `{}`. Triggered by {} via rule `{}`.",
                     seed.required_mode,
@@ -127,6 +138,7 @@ pub fn build_required_doc_problems(
                 "required_doc_missing_after_change".into(),
                 "restore_required_doc".into(),
                 seed.trigger_paths.iter().cloned().collect(),
+                seed.rule_reason.clone(),
                 format!(
                     "Required doc was touched but does not exist after the change for mode `{}`. Triggered by {} via rule `{}`.",
                     seed.required_mode,
@@ -145,6 +157,7 @@ pub fn build_required_doc_problems(
                     "review_metadata_not_refreshed".into(),
                     "refresh_review_metadata".into(),
                     seed.trigger_paths.iter().cloned().collect(),
+                    seed.rule_reason.clone(),
                     format!(
                         "review metadata was not refreshed with a substantive review marker change. Triggered by {} via rule `{}`.",
                         join_sorted(&seed.trigger_paths),
@@ -163,6 +176,7 @@ pub fn build_required_doc_problems(
                     "doc_body_not_updated".into(),
                     "update_doc_body".into(),
                     seed.trigger_paths.iter().cloned().collect(),
+                    seed.rule_reason.clone(),
                     format!(
                         "Doc body was not updated beyond review metadata changes for mode `body_update_required`. Triggered by {} via rule `{}`.",
                         join_sorted(&seed.trigger_paths),
@@ -195,6 +209,7 @@ struct RequiredProblemSeed {
     rule_id: String,
     required_mode: RequiredDocMode,
     rule_source: String,
+    rule_reason: String,
     trigger_paths: BTreeSet<String>,
 }
 
@@ -219,6 +234,7 @@ fn collect_required_problem_seeds(
                 rule_id: matched.rule.id.clone(),
                 required_mode,
                 rule_source: matched.source.clone(),
+                rule_reason: matched.rule.reason.clone(),
                 trigger_paths: BTreeSet::new(),
             });
 
@@ -386,6 +402,7 @@ mod tests {
             detail: crate::cli::DiagnosticDetail::Compact,
             diagnostics_page: 1,
             diagnostics_page_size: 5,
+            output: None,
         }
     }
 

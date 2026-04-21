@@ -16,6 +16,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     Lint(LintArgs),
+    Diagnostics(DiagnosticsArgs),
     Explain(ExplainArgs),
     ValidateConfig(ValidateConfigArgs),
 }
@@ -48,6 +49,29 @@ pub struct LintArgs {
     pub diagnostics_page: usize,
     #[arg(long, default_value_t = 5, value_parser = parse_positive_usize)]
     pub diagnostics_page_size: usize,
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct DiagnosticsArgs {
+    #[command(subcommand)]
+    pub command: DiagnosticsCommands,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum DiagnosticsCommands {
+    Show(DiagnosticsShowArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct DiagnosticsShowArgs {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub id: String,
+    #[arg(long, value_enum, default_value_t = DiagnosticsOutputFormat::Text)]
+    pub format: DiagnosticsOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -83,6 +107,12 @@ pub enum OutputFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DiagnosticsOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DiagnosticDetail {
     Summary,
     Compact,
@@ -111,7 +141,10 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, Commands, DiagnosticDetail, LintMode, OutputFormat};
+    use super::{
+        Cli, Commands, DiagnosticDetail, DiagnosticsCommands, DiagnosticsOutputFormat, LintMode,
+        OutputFormat,
+    };
 
     #[test]
     fn parses_lint_command() {
@@ -132,6 +165,8 @@ mod tests {
             "2",
             "--diagnostics-page-size",
             "9",
+            "--output",
+            ".docpact/runs/latest.json",
         ])
         .expect("cli should parse");
 
@@ -144,8 +179,42 @@ mod tests {
                 assert_eq!(args.detail, DiagnosticDetail::Full);
                 assert_eq!(args.diagnostics_page, 2);
                 assert_eq!(args.diagnostics_page_size, 9);
+                assert_eq!(
+                    args.output.as_deref(),
+                    Some(std::path::Path::new(".docpact/runs/latest.json"))
+                );
             }
             _ => panic!("expected lint command"),
+        }
+    }
+
+    #[test]
+    fn parses_diagnostics_show_command() {
+        let cli = Cli::try_parse_from([
+            "docpact",
+            "diagnostics",
+            "show",
+            "--report",
+            ".docpact/runs/latest.json",
+            "--id",
+            "d003",
+            "--format",
+            "json",
+        ])
+        .expect("cli should parse");
+
+        match cli.command {
+            Commands::Diagnostics(args) => match args.command {
+                DiagnosticsCommands::Show(show) => {
+                    assert_eq!(
+                        show.report,
+                        std::path::PathBuf::from(".docpact/runs/latest.json")
+                    );
+                    assert_eq!(show.id, "d003");
+                    assert_eq!(show.format, DiagnosticsOutputFormat::Json);
+                }
+            },
+            _ => panic!("expected diagnostics command"),
         }
     }
 
