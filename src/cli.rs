@@ -59,6 +59,8 @@ pub struct ValidateConfigArgs {
     pub root: Option<PathBuf>,
     #[arg(long)]
     pub config: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub strict: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -104,6 +106,19 @@ mod tests {
                 assert_eq!(args.format, OutputFormat::Json);
             }
             _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn parses_validate_config_strict_flag() {
+        let cli = Cli::try_parse_from(["ai-doc-lint", "validate-config", "--strict"])
+            .expect("cli should parse");
+
+        match cli.command {
+            Commands::ValidateConfig(args) => {
+                assert!(args.strict);
+            }
+            _ => panic!("expected validate-config command"),
         }
     }
 }

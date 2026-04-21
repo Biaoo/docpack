@@ -22,6 +22,7 @@ Create `.ai-doc-lint/config.yaml` in the target repository, then run:
 
 ```bash
 ai-doc-lint validate-config --root /path/to/repo
+ai-doc-lint validate-config --root /path/to/repo --strict
 ai-doc-lint check --root /path/to/repo --files src/api/client.ts,README.md
 ```
 

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +8,12 @@ use yaml_serde::Value;
 
 pub const DOC_ROOT_DIR: &str = ".ai-doc-lint";
 pub const CONFIG_FILE: &str = ".ai-doc-lint/config.yaml";
+pub const SUPPORTED_REQUIRED_DOC_MODES: &[&str] = &[
+    "review_or_update",
+    "metadata_refresh_required",
+    "body_update_required",
+    "must_exist",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImpactLayout {
@@ -67,6 +74,13 @@ pub struct LoadedRule {
     pub rule: Rule,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigValidationProblem {
+    pub source: String,
+    pub rule_id: Option<String>,
+    pub message: String,
+}
+
 pub fn normalize_path(value: &str) -> String {
     let replaced = value.replace('\\', "/");
     let trimmed = replaced.trim_start_matches("./");
@@ -102,7 +116,10 @@ fn layout_from_config(layout: ConfigLayout) -> ImpactLayout {
     }
 }
 
-pub fn detect_impact_layout(root_dir: &Path, config_override: Option<&Path>) -> Result<ImpactLayout> {
+pub fn detect_impact_layout(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<ImpactLayout> {
     let config_path = match config_override {
         Some(path) => path.to_path_buf(),
         None => root_dir.join(CONFIG_FILE),
@@ -145,7 +162,10 @@ fn descriptor(abs_path: PathBuf, rel_path: String, base_dir: String) -> ImpactFi
     }
 }
 
-pub fn list_impact_files(root_dir: &Path, config_override: Option<&Path>) -> Result<Vec<ImpactFileDescriptor>> {
+pub fn list_impact_files(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<ImpactFileDescriptor>> {
     let root_config_path = match config_override {
         Some(path) => path.to_path_buf(),
         None => root_dir.join(CONFIG_FILE),
@@ -203,7 +223,10 @@ fn list_workspace_repo_files(root_dir: &Path) -> Result<Vec<ImpactFileDescriptor
     Ok(results)
 }
 
-pub fn load_impact_files(root_dir: &Path, config_override: Option<&Path>) -> Result<Vec<LoadedRule>> {
+pub fn load_impact_files(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<LoadedRule>> {
     let mut loaded = Vec::new();
 
     for descriptor in list_impact_files(root_dir, config_override)? {
@@ -218,6 +241,195 @@ pub fn load_impact_files(root_dir: &Path, config_override: Option<&Path>) -> Res
     }
 
     Ok(loaded)
+}
+
+pub fn validate_loaded_rules(loaded_rules: &[LoadedRule]) -> Vec<ConfigValidationProblem> {
+    let mut problems = Vec::new();
+    let mut rule_sources = BTreeMap::<String, Vec<&LoadedRule>>::new();
+
+    for loaded in loaded_rules {
+        if !loaded.rule.id.trim().is_empty() {
+            rule_sources
+                .entry(loaded.rule.id.clone())
+                .or_default()
+                .push(loaded);
+        }
+    }
+
+    for (rule_id, entries) in &rule_sources {
+        if entries.len() < 2 {
+            continue;
+        }
+
+        let all_sources = entries
+            .iter()
+            .map(|entry| entry.source.as_str())
+            .collect::<Vec<_>>();
+
+        for entry in entries {
+            let other_sources = all_sources
+                .iter()
+                .copied()
+                .filter(|source| *source != entry.source)
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            problems.push(ConfigValidationProblem {
+                source: entry.source.clone(),
+                rule_id: Some(rule_id.clone()),
+                message: format!("duplicate rule id `{rule_id}` also found in: {other_sources}"),
+            });
+        }
+    }
+
+    for loaded in loaded_rules {
+        validate_rule(loaded, &mut problems);
+    }
+
+    problems.sort_by(|left, right| {
+        (&left.source, &left.rule_id, &left.message).cmp(&(
+            &right.source,
+            &right.rule_id,
+            &right.message,
+        ))
+    });
+    problems
+}
+
+fn validate_rule(loaded: &LoadedRule, problems: &mut Vec<ConfigValidationProblem>) {
+    let rule = &loaded.rule;
+    let rule_id = if rule.id.trim().is_empty() {
+        None
+    } else {
+        Some(rule.id.clone())
+    };
+
+    if rule.id.trim().is_empty() {
+        push_problem(problems, loaded, None, "rule id must not be empty".into());
+    }
+
+    if rule.triggers.is_empty() {
+        push_problem(
+            problems,
+            loaded,
+            rule_id.clone(),
+            "rule must define at least one trigger".into(),
+        );
+    }
+
+    if rule.required_docs.is_empty() {
+        push_problem(
+            problems,
+            loaded,
+            rule_id.clone(),
+            "rule must define at least one required doc".into(),
+        );
+    }
+
+    for (index, trigger) in rule.triggers.iter().enumerate() {
+        if let Some(message) = validate_trigger_path(&trigger.path) {
+            push_problem(
+                problems,
+                loaded,
+                rule_id.clone(),
+                format!("triggers[{index}].path {message}"),
+            );
+        }
+    }
+
+    for (index, doc) in rule.required_docs.iter().enumerate() {
+        if let Some(message) = validate_required_doc_path(&doc.path) {
+            push_problem(
+                problems,
+                loaded,
+                rule_id.clone(),
+                format!("requiredDocs[{index}].path {message}"),
+            );
+        }
+
+        if let Some(mode) = &doc.mode {
+            if !SUPPORTED_REQUIRED_DOC_MODES.contains(&mode.as_str()) {
+                push_problem(
+                    problems,
+                    loaded,
+                    rule_id.clone(),
+                    format!(
+                        "requiredDocs[{index}].mode `{mode}` is invalid; expected one of: {}",
+                        SUPPORTED_REQUIRED_DOC_MODES.join(", ")
+                    ),
+                );
+            }
+        }
+    }
+}
+
+fn push_problem(
+    problems: &mut Vec<ConfigValidationProblem>,
+    loaded: &LoadedRule,
+    rule_id: Option<String>,
+    message: String,
+) {
+    problems.push(ConfigValidationProblem {
+        source: loaded.source.clone(),
+        rule_id,
+        message,
+    });
+}
+
+fn validate_trigger_path(path: &str) -> Option<String> {
+    validate_repo_relative_path(path, true)
+}
+
+fn validate_required_doc_path(path: &str) -> Option<String> {
+    let base_message = validate_repo_relative_path(path, false)?;
+    Some(base_message)
+}
+
+fn validate_repo_relative_path(path: &str, allow_glob: bool) -> Option<String> {
+    let trimmed = path.trim();
+
+    if trimmed.is_empty() {
+        return Some("must not be empty".into());
+    }
+
+    if trimmed.starts_with('/') || looks_like_windows_absolute_path(trimmed) {
+        return Some(format!("must be repo-relative, got `{trimmed}`"));
+    }
+
+    if trimmed.contains('\\') {
+        return Some("must use `/` separators".into());
+    }
+
+    let segments = trimmed.split('/').collect::<Vec<_>>();
+    if segments.iter().any(|segment| segment.is_empty()) {
+        return Some("must not contain empty path segments".into());
+    }
+
+    for segment in segments {
+        if matches!(segment, "." | "..") {
+            return Some("must not contain `.` or `..` segments".into());
+        }
+
+        if allow_glob {
+            if segment.contains("**") && segment != "**" {
+                return Some(format!(
+                    "contains malformed glob segment `{segment}`; `**` must occupy a full path segment"
+                ));
+            }
+        } else if segment.contains('*') || segment.contains('?') {
+            return Some("must be an exact document path, not a glob".into());
+        }
+    }
+
+    None
+}
+
+fn looks_like_windows_absolute_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[1] == b':'
+        && bytes[0].is_ascii_alphabetic()
+        && matches!(bytes[2], b'/' | b'\\')
 }
 
 pub fn resolve_rule_path(base_dir: &str, rel_pattern: &str) -> String {
@@ -249,7 +461,11 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{CONFIG_FILE, DOC_ROOT_DIR, ImpactLayout, detect_impact_layout, load_impact_files, normalize_path, resolve_rule_path};
+    use super::{
+        CONFIG_FILE, DOC_ROOT_DIR, ImpactLayout, LoadedRule, RequiredDoc, Rule, Trigger,
+        detect_impact_layout, load_impact_files, normalize_path, resolve_rule_path,
+        validate_loaded_rules,
+    };
 
     fn temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -274,14 +490,20 @@ mod tests {
         let root = temp_dir("ai-doc-lint-layout");
         fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root dir should exist");
 
-        assert_eq!(detect_impact_layout(&root, None).expect("layout should resolve"), ImpactLayout::None);
+        assert_eq!(
+            detect_impact_layout(&root, None).expect("layout should resolve"),
+            ImpactLayout::None
+        );
 
         fs::write(
             root.join(CONFIG_FILE),
             "version: 1\nlayout: repo\nlastReviewedAt: 2026-04-18\nlastReviewedCommit: abc\n",
         )
         .expect("repo config");
-        assert_eq!(detect_impact_layout(&root, None).expect("layout should resolve"), ImpactLayout::Repo);
+        assert_eq!(
+            detect_impact_layout(&root, None).expect("layout should resolve"),
+            ImpactLayout::Repo
+        );
 
         fs::write(
             root.join(CONFIG_FILE),
@@ -353,6 +575,75 @@ rules:
         assert_eq!(
             resolve_rule_path("subrepo", ".ai-doc-lint/config.yaml"),
             "subrepo/.ai-doc-lint/config.yaml"
+        );
+    }
+
+    #[test]
+    fn strict_validation_reports_duplicate_ids_and_invalid_rule_shapes() {
+        let loaded = vec![
+            LoadedRule {
+                source: ".ai-doc-lint/config.yaml".into(),
+                base_dir: String::new(),
+                rule: Rule {
+                    id: "duplicate-rule".into(),
+                    scope: "repo".into(),
+                    repo: "example".into(),
+                    triggers: vec![Trigger {
+                        path: "src/***".into(),
+                        kind: Some("code".into()),
+                    }],
+                    required_docs: vec![RequiredDoc {
+                        path: "docs/*.md".into(),
+                        mode: Some("not-a-real-mode".into()),
+                    }],
+                    reason: "example".into(),
+                },
+            },
+            LoadedRule {
+                source: "child/.ai-doc-lint/config.yaml".into(),
+                base_dir: "child".into(),
+                rule: Rule {
+                    id: "duplicate-rule".into(),
+                    scope: "repo".into(),
+                    repo: "child".into(),
+                    triggers: Vec::new(),
+                    required_docs: Vec::new(),
+                    reason: "child".into(),
+                },
+            },
+        ];
+
+        let problems = validate_loaded_rules(&loaded);
+        let messages = problems
+            .iter()
+            .map(|problem| format!("{}: {}", problem.source, problem.message))
+            .collect::<Vec<_>>();
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("duplicate rule id `duplicate-rule`"))
+        );
+        assert!(messages.iter().any(|message| {
+            message.contains("triggers[0].path contains malformed glob segment `***`")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains("requiredDocs[0].path must be an exact document path")
+        }));
+        assert!(
+            messages.iter().any(
+                |message| message.contains("requiredDocs[0].mode `not-a-real-mode` is invalid")
+            )
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("rule must define at least one trigger"))
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("rule must define at least one required doc"))
         );
     }
 }
