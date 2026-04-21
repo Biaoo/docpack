@@ -24,6 +24,7 @@ use crate::reporters::{
     Problem, build_diagnostics_artifact_with_freshness, emit_lint_output, emit_report_hint,
 };
 use crate::rules::{MatchedRule, RequiredDocMode, match_rules, matches_pattern};
+use crate::waiver::{apply_waivers, current_local_date, read_waiver_file};
 
 #[derive(Debug, Clone)]
 pub struct CheckRun {
@@ -47,6 +48,11 @@ pub fn run(args: LintArgs) -> Result<AppExit> {
     if let Some(baseline_path) = args.baseline.as_deref() {
         let baseline = read_baseline_file(baseline_path)?;
         apply_baseline(&mut artifact, &baseline);
+    }
+    if let Some(waivers_path) = args.waivers.as_deref() {
+        let waivers = read_waiver_file(waivers_path)?;
+        let current_date = current_local_date()?;
+        apply_waivers(&mut artifact, &waivers, &current_date)?;
     }
     let report_path = resolve_report_output_path(&root_dir, args.output.as_deref())?;
     write_diagnostics_artifact(&report_path, &artifact)?;
@@ -73,12 +79,12 @@ pub fn run(args: LintArgs) -> Result<AppExit> {
     emit_report_hint(args.format, &display_path, drilldown_id);
 
     let has_uncovered_change = artifact.diagnostics.iter().any(|diagnostic| {
-        diagnostic.problem_type == "uncovered-change" && diagnostic.baseline_state == "active"
+        diagnostic.problem_type == "uncovered-change" && diagnostic.finding_state == "active"
     });
     let has_active_diagnostics = artifact
         .diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.baseline_state == "active");
+        .any(|diagnostic| diagnostic.finding_state == "active");
     let has_critical_stale_doc = artifact.freshness_summary.critical_count > 0;
 
     if (args.mode == crate::cli::LintMode::Enforce && has_active_diagnostics)
@@ -517,6 +523,7 @@ mod tests {
             fail_on_uncovered_change: false,
             fail_on_stale_docs: false,
             baseline: None,
+            waivers: None,
             output: None,
         }
     }

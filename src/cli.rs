@@ -17,6 +17,7 @@ pub struct Cli {
 pub enum Commands {
     Lint(LintArgs),
     Baseline(BaselineArgs),
+    Waiver(WaiverArgs),
     ListRules(ListRulesArgs),
     Doctor(DoctorArgs),
     Coverage(CoverageArgs),
@@ -62,6 +63,8 @@ pub struct LintArgs {
     #[arg(long)]
     pub baseline: Option<PathBuf>,
     #[arg(long)]
+    pub waivers: Option<PathBuf>,
+    #[arg(long)]
     pub output: Option<PathBuf>,
 }
 
@@ -82,6 +85,41 @@ pub struct BaselineCreateArgs {
     pub report: PathBuf,
     #[arg(long)]
     pub output: PathBuf,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct WaiverArgs {
+    #[command(subcommand)]
+    pub command: WaiverCommands,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum WaiverCommands {
+    Add(WaiverAddArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct WaiverAddArgs {
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub id: String,
+    #[arg(long)]
+    pub reason: String,
+    #[arg(long)]
+    pub owner: String,
+    #[arg(long = "expires-at", value_parser = parse_iso_date)]
+    pub expires_at: String,
+    #[arg(long = "scope-rule-id")]
+    pub scope_rule_ids: Vec<String>,
+    #[arg(long = "scope-path")]
+    pub scope_paths: Vec<String>,
+    #[arg(long)]
+    pub waivers: PathBuf,
+    #[arg(long, value_enum, default_value_t = WaiverOutputFormat::Text)]
+    pub format: WaiverOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -243,6 +281,12 @@ pub enum ReviewOutputFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WaiverOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DiagnosticDetail {
     Summary,
     Compact,
@@ -307,6 +351,7 @@ mod tests {
         BaselineCommands, Cli, Commands, CoverageOutputFormat, DiagnosticDetail,
         DiagnosticsCommands, DiagnosticsOutputFormat, DoctorOutputFormat, FreshnessOutputFormat,
         LintMode, ListRulesOutputFormat, OutputFormat, ReviewCommands, ReviewOutputFormat,
+        WaiverCommands, WaiverOutputFormat,
     };
 
     #[test]
@@ -332,6 +377,8 @@ mod tests {
             "--fail-on-stale-docs",
             "--baseline",
             ".docpact/baseline.json",
+            "--waivers",
+            ".docpact/waivers.yaml",
             "--output",
             ".docpact/runs/latest.json",
         ])
@@ -351,6 +398,10 @@ mod tests {
                 assert_eq!(
                     args.baseline.as_deref(),
                     Some(std::path::Path::new(".docpact/baseline.json"))
+                );
+                assert_eq!(
+                    args.waivers.as_deref(),
+                    Some(std::path::Path::new(".docpact/waivers.yaml"))
                 );
                 assert_eq!(
                     args.output.as_deref(),
@@ -418,6 +469,60 @@ mod tests {
                 }
             },
             _ => panic!("expected baseline command"),
+        }
+    }
+
+    #[test]
+    fn parses_waiver_add_command() {
+        let cli = Cli::try_parse_from([
+            "docpact",
+            "waiver",
+            "add",
+            "--root",
+            ".",
+            "--report",
+            ".docpact/runs/latest.json",
+            "--id",
+            "d001",
+            "--reason",
+            "legacy migration in progress",
+            "--owner",
+            "docs-team",
+            "--expires-at",
+            "2026-05-01",
+            "--scope-rule-id",
+            "api-docs",
+            "--scope-path",
+            "README.md",
+            "--waivers",
+            ".docpact/waivers.yaml",
+            "--format",
+            "json",
+        ])
+        .expect("cli should parse");
+
+        match cli.command {
+            Commands::Waiver(args) => match args.command {
+                WaiverCommands::Add(add) => {
+                    assert_eq!(add.root.as_deref(), Some(std::path::Path::new(".")));
+                    assert_eq!(
+                        add.report,
+                        std::path::PathBuf::from(".docpact/runs/latest.json")
+                    );
+                    assert_eq!(add.id, "d001");
+                    assert_eq!(add.reason, "legacy migration in progress");
+                    assert_eq!(add.owner, "docs-team");
+                    assert_eq!(add.expires_at, "2026-05-01");
+                    assert_eq!(add.scope_rule_ids, vec!["api-docs"]);
+                    assert_eq!(add.scope_paths, vec!["README.md"]);
+                    assert_eq!(
+                        add.waivers,
+                        std::path::PathBuf::from(".docpact/waivers.yaml")
+                    );
+                    assert_eq!(add.format, WaiverOutputFormat::Json);
+                }
+            },
+            _ => panic!("expected waiver command"),
         }
     }
 

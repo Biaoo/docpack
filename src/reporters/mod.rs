@@ -21,7 +21,11 @@ fn default_baseline_status() -> String {
     "not-applied".into()
 }
 
-fn default_baseline_state() -> String {
+fn default_waiver_status() -> String {
+    "not-applied".into()
+}
+
+fn default_finding_state() -> String {
     "active".into()
 }
 
@@ -62,8 +66,14 @@ pub struct DiagnosticsArtifact {
     pub baseline_status: String,
     #[serde(default)]
     pub baseline_summary: BaselineSummary,
+    #[serde(default = "default_waiver_status")]
+    pub waiver_status: String,
+    #[serde(default)]
+    pub waiver_summary: WaiverSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stale_docs: Vec<FreshnessItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expired_waivers: Vec<ExpiredWaiver>,
     pub summary: ArtifactSummary,
     pub diagnostics: Vec<DiagnosticRecord>,
 }
@@ -89,8 +99,14 @@ pub struct Report {
     pub baseline_status: String,
     #[serde(default)]
     pub baseline_summary: BaselineSummary,
+    #[serde(default = "default_waiver_status")]
+    pub waiver_status: String,
+    #[serde(default)]
+    pub waiver_summary: WaiverSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stale_docs: Vec<FreshnessItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expired_waivers: Vec<ExpiredWaiver>,
     pub detail: String,
     pub summary: ReportSummary,
     pub items: Vec<DiagnosticItem>,
@@ -127,6 +143,23 @@ pub struct BaselineSummary {
     pub suppressed_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct WaiverSummary {
+    pub waived_count: usize,
+    pub expired_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExpiredWaiver {
+    #[serde(rename = "type")]
+    pub problem_type: String,
+    pub path: String,
+    pub rule_id: String,
+    pub owner: String,
+    pub reason: String,
+    pub expires_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiagnosticItem {
     pub diagnostic_id: String,
@@ -138,8 +171,14 @@ pub struct DiagnosticItem {
     pub required_mode: Option<String>,
     pub failure_reason: String,
     pub suggested_action: String,
-    #[serde(default = "default_baseline_state")]
-    pub baseline_state: String,
+    #[serde(default = "default_finding_state")]
+    pub finding_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiver_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiver_owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiver_expires_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_source: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -158,8 +197,14 @@ pub struct DiagnosticRecord {
     pub required_mode: Option<String>,
     pub failure_reason: String,
     pub suggested_action: String,
-    #[serde(default = "default_baseline_state")]
-    pub baseline_state: String,
+    #[serde(default = "default_finding_state")]
+    pub finding_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiver_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiver_owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiver_expires_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_source: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -366,7 +411,10 @@ impl DiagnosticRecord {
             required_mode: self.required_mode.clone(),
             failure_reason: self.failure_reason.clone(),
             suggested_action: self.suggested_action.clone(),
-            baseline_state: self.baseline_state.clone(),
+            finding_state: self.finding_state.clone(),
+            waiver_reason: self.waiver_reason.clone(),
+            waiver_owner: self.waiver_owner.clone(),
+            waiver_expires_at: self.waiver_expires_at.clone(),
             rule_source: (detail == DiagnosticDetail::Full)
                 .then(|| self.rule_source.clone())
                 .flatten(),
@@ -429,7 +477,16 @@ pub fn emit_diagnostic_show(record: &DiagnosticRecord, format: DiagnosticsOutput
             );
             println!("failure_reason={}", record.failure_reason);
             println!("suggested_action={}", record.suggested_action);
-            println!("baseline_state={}", record.baseline_state);
+            println!("finding_state={}", record.finding_state);
+            if let Some(reason) = &record.waiver_reason {
+                println!("waiver_reason={reason}");
+            }
+            if let Some(owner) = &record.waiver_owner {
+                println!("waiver_owner={owner}");
+            }
+            if let Some(expires_at) = &record.waiver_expires_at {
+                println!("waiver_expires_at={expires_at}");
+            }
             if let Some(rule_source) = &record.rule_source {
                 println!("rule_source={rule_source}");
             }
@@ -495,7 +552,10 @@ pub fn build_diagnostics_artifact_with_freshness(
             required_mode: problem.required_mode,
             failure_reason: problem.failure_reason,
             suggested_action: problem.suggested_action,
-            baseline_state: default_baseline_state(),
+            finding_state: default_finding_state(),
+            waiver_reason: None,
+            waiver_owner: None,
+            waiver_expires_at: None,
             rule_source: problem.rule_source,
             trigger_paths: problem.trigger_paths,
             rule_reason: problem.rule_reason,
@@ -557,9 +617,12 @@ pub fn build_diagnostics_artifact_with_freshness(
             active_count: diagnostics.len(),
             suppressed_count: 0,
         },
+        waiver_status: default_waiver_status(),
+        waiver_summary: WaiverSummary::default(),
         stale_docs: lint_freshness
             .map(|report| report.stale_docs.clone())
             .unwrap_or_default(),
+        expired_waivers: Vec::new(),
         summary: ArtifactSummary {
             total_count: diagnostics.len(),
             counts_by_type,
@@ -599,7 +662,10 @@ pub fn build_report_from_artifact(
         freshness_summary: artifact.freshness_summary.clone(),
         baseline_status: artifact.baseline_status.clone(),
         baseline_summary: artifact.baseline_summary.clone(),
+        waiver_status: artifact.waiver_status.clone(),
+        waiver_summary: artifact.waiver_summary.clone(),
         stale_docs: artifact.stale_docs.clone(),
+        expired_waivers: artifact.expired_waivers.clone(),
         detail: detail.as_str().into(),
         summary: paged.summary.clone(),
         items: paged.items,
@@ -640,7 +706,7 @@ pub fn build_sarif_log_from_artifact(artifact: &DiagnosticsArtifact, mode: LintM
             results: artifact
                 .diagnostics
                 .iter()
-                .filter(|diagnostic| diagnostic.baseline_state == "active")
+                .filter(|diagnostic| diagnostic.finding_state == "active")
                 .map(|diagnostic| SarifResult {
                     rule_id: sarif_rule_id(diagnostic).into(),
                     level: level.clone(),
@@ -672,6 +738,38 @@ pub fn build_sarif_log_from_artifact(artifact: &DiagnosticsArtifact, mode: LintM
             }),
         }],
     }
+}
+
+pub fn refresh_finding_summaries(artifact: &mut DiagnosticsArtifact, expired_waiver_count: usize) {
+    let active_count = artifact
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.finding_state == "active")
+        .count();
+    let suppressed_count = artifact
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.finding_state == "suppressed_by_baseline")
+        .count();
+    let waived_count = artifact
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.finding_state == "waived")
+        .count();
+
+    artifact.baseline_summary = BaselineSummary {
+        active_count,
+        suppressed_count,
+    };
+    artifact.waiver_summary = WaiverSummary {
+        waived_count,
+        expired_count: expired_waiver_count,
+    };
+    artifact.status = if active_count == 0 {
+        "ok".into()
+    } else {
+        "fail".into()
+    };
 }
 
 fn build_paginated_diagnostics(
@@ -727,11 +825,12 @@ fn emit_text_report(report: &Report, mode: LintMode) {
     }
 
     let heading = if report.baseline_summary.active_count == 0
-        && report.baseline_summary.suppressed_count > 0
+        && (report.baseline_summary.suppressed_count > 0 || report.waiver_summary.waived_count > 0)
     {
-        "Docpact found baseline-suppressed findings:"
-    } else if report.baseline_summary.suppressed_count > 0 {
-        "Docpact found active and baseline-suppressed findings:"
+        "Docpact found waived and/or baseline-suppressed findings:"
+    } else if report.baseline_summary.suppressed_count > 0 || report.waiver_summary.waived_count > 0
+    {
+        "Docpact found active, waived, and/or baseline-suppressed findings:"
     } else {
         match mode {
             LintMode::Enforce => "Docpact found blocking problems:",
@@ -741,10 +840,12 @@ fn emit_text_report(report: &Report, mode: LintMode) {
 
     println!("{heading}");
     println!(
-        "Summary: total={}, active={}, suppressed_by_baseline={}, counts_by_type={}, top_rules={}, coverage_status={}, uncovered={}, freshness_status={}, stale_docs={}, critical_stale_docs={}, invalid_review_references={}, baseline_status={}, page={}/{}, page_size={}",
+        "Summary: total={}, active={}, suppressed_by_baseline={}, waived={}, expired_waivers={}, counts_by_type={}, top_rules={}, coverage_status={}, uncovered={}, freshness_status={}, stale_docs={}, critical_stale_docs={}, invalid_review_references={}, baseline_status={}, waiver_status={}, page={}/{}, page_size={}",
         report.total_count,
         report.baseline_summary.active_count,
         report.baseline_summary.suppressed_count,
+        report.waiver_summary.waived_count,
+        report.waiver_summary.expired_count,
         format_counts_by_type(&report.summary.counts_by_type),
         format_top_rules(&report.summary.top_rules),
         report.coverage_status,
@@ -754,6 +855,7 @@ fn emit_text_report(report: &Report, mode: LintMode) {
         report.freshness_summary.critical_count,
         report.freshness_summary.invalid_review_reference_count,
         report.baseline_status,
+        report.waiver_status,
         report.page,
         report.total_pages,
         report.page_size,
@@ -769,6 +871,21 @@ fn emit_text_report(report: &Report, mode: LintMode) {
 
     for item in &report.items {
         println!("{}", format_item(item));
+    }
+
+    if !report.expired_waivers.is_empty() {
+        println!("Expired waivers:");
+        for waiver in &report.expired_waivers {
+            println!(
+                "- type={} path={} rule={} owner={} expires_at={} reason={}",
+                waiver.problem_type,
+                waiver.path,
+                waiver.rule_id,
+                waiver.owner,
+                waiver.expires_at,
+                waiver.reason
+            );
+        }
     }
 }
 
@@ -914,8 +1031,20 @@ fn format_item(item: &DiagnosticItem) -> String {
         format!("mode={}", item.required_mode.as_deref().unwrap_or("n/a")),
         format!("reason={}", item.failure_reason),
         format!("action={}", item.suggested_action),
-        format!("baseline_state={}", item.baseline_state),
+        format!("finding_state={}", item.finding_state),
     ];
+
+    if let Some(waiver_reason) = &item.waiver_reason {
+        parts.push(format!("waiver_reason={waiver_reason}"));
+    }
+
+    if let Some(waiver_owner) = &item.waiver_owner {
+        parts.push(format!("waiver_owner={waiver_owner}"));
+    }
+
+    if let Some(waiver_expires_at) = &item.waiver_expires_at {
+        parts.push(format!("waiver_expires_at={waiver_expires_at}"));
+    }
 
     if let Some(rule_source) = &item.rule_source {
         parts.push(format!("rule_source={rule_source}"));
@@ -940,7 +1069,7 @@ fn emit_annotations(diagnostics: &[DiagnosticRecord], mode: LintMode) {
 
     for diagnostic in diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.baseline_state == "active")
+        .filter(|diagnostic| diagnostic.finding_state == "active")
     {
         println!("::{level} file={}::{}", diagnostic.path, diagnostic.message);
     }
@@ -949,18 +1078,19 @@ fn emit_annotations(diagnostics: &[DiagnosticRecord], mode: LintMode) {
 fn ordered_diagnostics_for_report(diagnostics: &[DiagnosticRecord]) -> Vec<&DiagnosticRecord> {
     let mut ordered = diagnostics.iter().collect::<Vec<_>>();
     ordered.sort_by(|left, right| {
-        baseline_rank(&left.baseline_state)
-            .cmp(&baseline_rank(&right.baseline_state))
+        finding_state_rank(&left.finding_state)
+            .cmp(&finding_state_rank(&right.finding_state))
             .then_with(|| left.diagnostic_id.cmp(&right.diagnostic_id))
     });
     ordered
 }
 
-fn baseline_rank(state: &str) -> usize {
+fn finding_state_rank(state: &str) -> usize {
     match state {
         "active" => 0,
-        "suppressed_by_baseline" => 1,
-        _ => 2,
+        "waived" => 1,
+        "suppressed_by_baseline" => 2,
+        _ => 3,
     }
 }
 

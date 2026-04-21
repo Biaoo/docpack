@@ -14,6 +14,7 @@ pub mod reporters;
 pub mod review;
 pub mod rules;
 pub mod validate_config;
+pub mod waiver;
 
 use miette::Result;
 
@@ -29,6 +30,7 @@ pub fn run(cli: Cli) -> Result<AppExit> {
     match cli.command {
         Commands::Lint(args) => check::run(args),
         Commands::Baseline(args) => baseline::run(args),
+        Commands::Waiver(args) => waiver::run(args),
         Commands::ListRules(args) => list_rules::run(args),
         Commands::Doctor(args) => doctor::run(args),
         Commands::Coverage(args) => coverage::run(args),

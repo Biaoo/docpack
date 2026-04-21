@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::AppExit;
 use crate::cli::{BaselineArgs, BaselineCommands, BaselineCreateArgs};
 use crate::diagnostics::read_diagnostics_artifact;
-use crate::reporters::{BaselineSummary, DiagnosticRecord, DiagnosticsArtifact};
+use crate::reporters::{DiagnosticRecord, DiagnosticsArtifact, refresh_finding_summaries};
 
 pub const BASELINE_SCHEMA_VERSION: &str = "docpact.baseline.v1";
 
@@ -20,11 +20,11 @@ pub struct BaselineFile {
     pub tool_version: String,
     pub generated_at: String,
     pub fingerprint_count: usize,
-    pub fingerprints: Vec<BaselineFingerprint>,
+    pub fingerprints: Vec<FindingFingerprint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-pub struct BaselineFingerprint {
+pub struct FindingFingerprint {
     #[serde(rename = "type")]
     pub problem_type: String,
     pub path: String,
@@ -74,8 +74,8 @@ pub fn create_baseline_from_artifact(artifact: &DiagnosticsArtifact) -> Result<B
     })
 }
 
-pub fn fingerprint_for(diagnostic: &DiagnosticRecord) -> BaselineFingerprint {
-    BaselineFingerprint {
+pub fn fingerprint_for(diagnostic: &DiagnosticRecord) -> FindingFingerprint {
+    FindingFingerprint {
         problem_type: diagnostic.problem_type.clone(),
         path: diagnostic.path.clone(),
         rule_id: diagnostic.rule_id.clone(),
@@ -131,28 +131,22 @@ pub fn apply_baseline(artifact: &mut DiagnosticsArtifact, baseline: &BaselineFil
     let mut suppressed_count = 0usize;
     for diagnostic in &mut artifact.diagnostics {
         if fingerprints.contains(&fingerprint_for(diagnostic)) {
-            diagnostic.baseline_state = "suppressed_by_baseline".into();
+            diagnostic.finding_state = "suppressed_by_baseline".into();
             suppressed_count += 1;
         } else {
-            diagnostic.baseline_state = "active".into();
+            diagnostic.finding_state = "active".into();
         }
+        diagnostic.waiver_reason = None;
+        diagnostic.waiver_owner = None;
+        diagnostic.waiver_expires_at = None;
     }
 
-    let active_count = artifact.diagnostics.len().saturating_sub(suppressed_count);
-    artifact.baseline_summary = BaselineSummary {
-        active_count,
-        suppressed_count,
-    };
     artifact.baseline_status = if suppressed_count == 0 {
         "applied-no-match".into()
     } else {
         "has-suppressed-findings".into()
     };
-    artifact.status = if active_count == 0 {
-        "ok".into()
-    } else {
-        "fail".into()
-    };
+    refresh_finding_summaries(artifact, artifact.waiver_summary.expired_count);
 }
 
 fn generated_at_string() -> Result<String> {
@@ -254,7 +248,10 @@ mod tests {
             required_mode: Some("review_or_update".into()),
             failure_reason: "required_doc_not_touched".into(),
             suggested_action: "touch_required_doc".into(),
-            baseline_state: "active".into(),
+            finding_state: "active".into(),
+            waiver_reason: None,
+            waiver_owner: None,
+            waiver_expires_at: None,
             rule_source: Some(".docpact/config.yaml".into()),
             trigger_paths: vec!["src/extra.ts".into()],
             rule_reason: Some("repo rationale".into()),
@@ -268,10 +265,10 @@ mod tests {
         assert_eq!(artifact.baseline_summary.active_count, 1);
         assert_eq!(artifact.diagnostics.len(), 2);
         assert_eq!(
-            artifact.diagnostics[0].baseline_state,
+            artifact.diagnostics[0].finding_state,
             "suppressed_by_baseline"
         );
-        assert_eq!(artifact.diagnostics[1].baseline_state, "active");
+        assert_eq!(artifact.diagnostics[1].finding_state, "active");
         assert_eq!(artifact.status, "fail");
         assert_eq!(
             fingerprint_for(&artifact.diagnostics[1]),
