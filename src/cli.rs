@@ -54,6 +54,8 @@ pub struct LintArgs {
     pub diagnostics_page_size: usize,
     #[arg(long, default_value_t = false)]
     pub fail_on_uncovered_change: bool,
+    #[arg(long, default_value_t = false)]
+    pub fail_on_stale_docs: bool,
     #[arg(long)]
     pub output: Option<PathBuf>,
 }
@@ -271,6 +273,7 @@ mod tests {
             "--diagnostics-page-size",
             "9",
             "--fail-on-uncovered-change",
+            "--fail-on-stale-docs",
             "--output",
             ".docpact/runs/latest.json",
         ])
@@ -286,6 +289,7 @@ mod tests {
                 assert_eq!(args.diagnostics_page, 2);
                 assert_eq!(args.diagnostics_page_size, 9);
                 assert!(args.fail_on_uncovered_change);
+                assert!(args.fail_on_stale_docs);
                 assert_eq!(
                     args.output.as_deref(),
                     Some(std::path::Path::new(".docpact/runs/latest.json"))

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 use miette::{IntoDiagnostic, Result, bail, miette};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use yaml_serde::Value;
 
 use crate::AppExit;
@@ -15,11 +15,12 @@ use crate::config::{
 };
 use crate::git::{get_tracked_paths, get_unique_commits_since, is_commit_reachable_from_head};
 use crate::metadata::parse_frontmatter_scalar_values;
+use crate::rules::MatchedRule;
 use crate::rules::matches_pattern;
 
 pub const FRESHNESS_AUDIT_SCHEMA_VERSION: &str = "docpact.freshness.v1";
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FreshnessReport {
     pub schema_version: String,
     pub tool_name: String,
@@ -29,7 +30,7 @@ pub struct FreshnessReport {
     pub items: Vec<FreshnessItem>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct FreshnessSummary {
     pub governed_doc_count: usize,
     pub fresh_doc_count: usize,
@@ -39,7 +40,7 @@ pub struct FreshnessSummary {
     pub invalid_baseline_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FreshnessItem {
     pub path: String,
     pub last_reviewed_commit: Option<String>,
@@ -49,8 +50,16 @@ pub struct FreshnessItem {
     pub associated_changed_paths: Vec<String>,
     pub associated_changed_paths_count: usize,
     pub staleness_level: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub baseline_problems: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LintFreshnessReport {
+    pub freshness_status: String,
+    pub summary: FreshnessSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_docs: Vec<FreshnessItem>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,46 +115,62 @@ fn execute_with_today(args: &FreshnessArgs, today: &str) -> Result<FreshnessRepo
         .collect::<BTreeMap<_, _>>();
     let governed_docs = build_governed_doc_contexts(&loaded_rules, &freshness_by_source);
 
-    let mut items = Vec::new();
-    for (path, context) in governed_docs {
-        items.push(evaluate_doc(
-            &root_dir,
-            &path,
-            &context,
-            &tracked_paths,
-            today,
-        )?);
-    }
-
-    let warn_count = items
-        .iter()
-        .filter(|item| item.staleness_level == FreshnessLevel::Warn.as_str())
-        .count();
-    let critical_count = items
-        .iter()
-        .filter(|item| item.staleness_level == FreshnessLevel::Critical.as_str())
-        .count();
-    let invalid_baseline_count = items
-        .iter()
-        .filter(|item| !item.baseline_problems.is_empty())
-        .count();
-    let stale_doc_count = warn_count + critical_count;
-    let governed_doc_count = items.len();
+    let items = evaluate_contexts(&root_dir, &governed_docs, &tracked_paths, today)?;
+    let summary = summarize_items(&items);
 
     Ok(FreshnessReport {
         schema_version: FRESHNESS_AUDIT_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
         generated_at: today.to_string(),
-        summary: FreshnessSummary {
-            governed_doc_count,
-            fresh_doc_count: governed_doc_count.saturating_sub(stale_doc_count),
-            stale_doc_count,
-            warn_count,
-            critical_count,
-            invalid_baseline_count,
-        },
+        summary,
         items,
+    })
+}
+
+pub fn execute_lint_for_matched_rules(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+    matched_rules: &[MatchedRule],
+) -> Result<LintFreshnessReport> {
+    let today = today_date_string()?;
+    execute_lint_for_matched_rules_with_today(root_dir, config_override, matched_rules, &today)
+}
+
+fn execute_lint_for_matched_rules_with_today(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+    matched_rules: &[MatchedRule],
+    today: &str,
+) -> Result<LintFreshnessReport> {
+    if matched_rules.is_empty() {
+        return Ok(LintFreshnessReport {
+            freshness_status: "ok".into(),
+            summary: FreshnessSummary::default(),
+            stale_docs: Vec::new(),
+        });
+    }
+
+    let impact_files = list_impact_files(root_dir, config_override)?;
+    let tracked_paths = collect_tracked_paths(root_dir, &impact_files)?;
+    let freshness_configs = load_freshness_configs(root_dir, config_override)?;
+    let freshness_by_source = freshness_configs
+        .into_iter()
+        .map(|loaded| (loaded.source, loaded.freshness))
+        .collect::<BTreeMap<_, _>>();
+    let governed_docs =
+        build_governed_doc_contexts_from_matched_rules(matched_rules, &freshness_by_source);
+    let items = evaluate_contexts(root_dir, &governed_docs, &tracked_paths, today)?;
+    let summary = summarize_items(&items);
+    let stale_docs = items
+        .into_iter()
+        .filter(|item| item.staleness_level != FreshnessLevel::Ok.as_str())
+        .collect::<Vec<_>>();
+
+    Ok(LintFreshnessReport {
+        freshness_status: summarize_status(&summary).into(),
+        summary,
+        stale_docs,
     })
 }
 
@@ -169,6 +194,42 @@ fn build_governed_doc_contexts(
 
         for required_doc in &loaded.rule.required_docs {
             let resolved_doc = resolve_rule_path(&loaded.base_dir, &required_doc.path);
+            let entry = contexts
+                .entry(resolved_doc)
+                .or_insert_with(|| GovernedDocContext {
+                    thresholds: thresholds.clone(),
+                    associated_patterns: BTreeSet::new(),
+                });
+            entry.thresholds = merge_thresholds(&entry.thresholds, &thresholds);
+            entry
+                .associated_patterns
+                .extend(associated_patterns.iter().cloned());
+        }
+    }
+
+    contexts
+}
+
+fn build_governed_doc_contexts_from_matched_rules(
+    matched_rules: &[MatchedRule],
+    freshness_by_source: &BTreeMap<String, FreshnessConfig>,
+) -> BTreeMap<String, GovernedDocContext> {
+    let mut contexts = BTreeMap::new();
+
+    for matched in matched_rules {
+        let thresholds = freshness_by_source
+            .get(&matched.source)
+            .cloned()
+            .unwrap_or_default();
+        let associated_patterns = matched
+            .rule
+            .triggers
+            .iter()
+            .map(|trigger| resolve_rule_path(&matched.base_dir, &trigger.path))
+            .collect::<Vec<_>>();
+
+        for required_doc in &matched.rule.required_docs {
+            let resolved_doc = resolve_rule_path(&matched.base_dir, &required_doc.path);
             let entry = contexts
                 .entry(resolved_doc)
                 .or_insert_with(|| GovernedDocContext {
@@ -257,6 +318,55 @@ fn evaluate_doc(
         staleness_level: staleness_level.as_str().into(),
         baseline_problems,
     })
+}
+
+fn evaluate_contexts(
+    root_dir: &Path,
+    contexts: &BTreeMap<String, GovernedDocContext>,
+    tracked_paths: &[String],
+    today: &str,
+) -> Result<Vec<FreshnessItem>> {
+    let mut items = Vec::new();
+    for (path, context) in contexts {
+        items.push(evaluate_doc(root_dir, path, context, tracked_paths, today)?);
+    }
+    Ok(items)
+}
+
+fn summarize_items(items: &[FreshnessItem]) -> FreshnessSummary {
+    let warn_count = items
+        .iter()
+        .filter(|item| item.staleness_level == FreshnessLevel::Warn.as_str())
+        .count();
+    let critical_count = items
+        .iter()
+        .filter(|item| item.staleness_level == FreshnessLevel::Critical.as_str())
+        .count();
+    let invalid_baseline_count = items
+        .iter()
+        .filter(|item| !item.baseline_problems.is_empty())
+        .count();
+    let stale_doc_count = warn_count + critical_count;
+    let governed_doc_count = items.len();
+
+    FreshnessSummary {
+        governed_doc_count,
+        fresh_doc_count: governed_doc_count.saturating_sub(stale_doc_count),
+        stale_doc_count,
+        warn_count,
+        critical_count,
+        invalid_baseline_count,
+    }
+}
+
+fn summarize_status(summary: &FreshnessSummary) -> &'static str {
+    if summary.critical_count > 0 {
+        "has-critical-stale-doc"
+    } else if summary.stale_doc_count > 0 {
+        "has-stale-doc"
+    } else {
+        "ok"
+    }
 }
 
 fn classify_staleness(

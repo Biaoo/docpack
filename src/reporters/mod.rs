@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{DiagnosticDetail, DiagnosticsOutputFormat, LintMode, OutputFormat};
+use crate::freshness::{FreshnessItem, FreshnessSummary, LintFreshnessReport};
 
 pub const SUPPORTED_REPORTERS: &[&str] = &["text", "json", "sarif", "github"];
 pub const SARIF_SCHEMA_URI: &str =
@@ -11,6 +12,10 @@ pub const DIAGNOSTICS_SCHEMA_VERSION: &str = "docpact.diagnostics.v1";
 
 const METADATA_RULE_ID: &str = "metadata-review-fields";
 const UNCOVERED_CHANGE_RULE_ID: &str = "coverage-uncovered-change";
+
+fn default_freshness_status() -> String {
+    "ok".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Problem {
@@ -41,6 +46,12 @@ pub struct DiagnosticsArtifact {
     pub matched_rule_count: usize,
     pub uncovered_changed_paths: Vec<String>,
     pub coverage_status: String,
+    #[serde(default = "default_freshness_status")]
+    pub freshness_status: String,
+    #[serde(default)]
+    pub freshness_summary: FreshnessSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_docs: Vec<FreshnessItem>,
     pub summary: ArtifactSummary,
     pub diagnostics: Vec<DiagnosticRecord>,
 }
@@ -59,6 +70,11 @@ pub struct Report {
     pub matched_rule_count: usize,
     pub uncovered_changed_paths: Vec<String>,
     pub coverage_status: String,
+    #[serde(default = "default_freshness_status")]
+    pub freshness_status: String,
+    pub freshness_summary: FreshnessSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_docs: Vec<FreshnessItem>,
     pub detail: String,
     pub summary: ReportSummary,
     pub items: Vec<DiagnosticItem>,
@@ -217,6 +233,12 @@ pub struct SarifProperties {
     pub uncovered_changed_paths: Vec<String>,
     #[serde(rename = "coverageStatus")]
     pub coverage_status: String,
+    #[serde(rename = "freshnessStatus")]
+    pub freshness_status: String,
+    #[serde(rename = "freshnessSummary")]
+    pub freshness_summary: FreshnessSummary,
+    #[serde(rename = "staleDocs", default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_docs: Vec<FreshnessItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -424,6 +446,15 @@ pub fn build_diagnostics_artifact(
     changed_paths: &[String],
     matched_rule_count: usize,
 ) -> DiagnosticsArtifact {
+    build_diagnostics_artifact_with_freshness(problems, changed_paths, matched_rule_count, None)
+}
+
+pub fn build_diagnostics_artifact_with_freshness(
+    problems: &[Problem],
+    changed_paths: &[String],
+    matched_rule_count: usize,
+    lint_freshness: Option<&LintFreshnessReport>,
+) -> DiagnosticsArtifact {
     let diagnostics = sorted_diagnostics(problems)
         .into_iter()
         .enumerate()
@@ -486,6 +517,15 @@ pub fn build_diagnostics_artifact(
         } else {
             "has-uncovered-change".into()
         },
+        freshness_status: lint_freshness
+            .map(|report| report.freshness_status.clone())
+            .unwrap_or_else(|| "ok".into()),
+        freshness_summary: lint_freshness
+            .map(|report| report.summary.clone())
+            .unwrap_or_default(),
+        stale_docs: lint_freshness
+            .map(|report| report.stale_docs.clone())
+            .unwrap_or_default(),
         summary: ArtifactSummary {
             total_count: diagnostics.len(),
             counts_by_type,
@@ -521,6 +561,9 @@ pub fn build_report_from_artifact(
         matched_rule_count: artifact.matched_rule_count,
         uncovered_changed_paths: artifact.uncovered_changed_paths.clone(),
         coverage_status: artifact.coverage_status.clone(),
+        freshness_status: artifact.freshness_status.clone(),
+        freshness_summary: artifact.freshness_summary.clone(),
+        stale_docs: artifact.stale_docs.clone(),
         detail: detail.as_str().into(),
         summary: paged.summary.clone(),
         items: paged.items,
@@ -586,6 +629,9 @@ pub fn build_sarif_log_from_artifact(artifact: &DiagnosticsArtifact, mode: LintM
                 matched_rule_count: artifact.matched_rule_count,
                 uncovered_changed_paths: artifact.uncovered_changed_paths.clone(),
                 coverage_status: artifact.coverage_status.clone(),
+                freshness_status: artifact.freshness_status.clone(),
+                freshness_summary: artifact.freshness_summary.clone(),
+                stale_docs: artifact.stale_docs.clone(),
             }),
         }],
     }
@@ -649,12 +695,16 @@ fn emit_text_report(report: &Report, mode: LintMode) {
 
     println!("{heading}");
     println!(
-        "Summary: total={}, counts_by_type={}, top_rules={}, coverage_status={}, uncovered={}, page={}/{}, page_size={}",
+        "Summary: total={}, counts_by_type={}, top_rules={}, coverage_status={}, uncovered={}, freshness_status={}, stale_docs={}, critical_stale_docs={}, invalid_baselines={}, page={}/{}, page_size={}",
         report.total_count,
         format_counts_by_type(&report.summary.counts_by_type),
         format_top_rules(&report.summary.top_rules),
         report.coverage_status,
         report.uncovered_changed_paths.len(),
+        report.freshness_status,
+        report.freshness_summary.stale_doc_count,
+        report.freshness_summary.critical_count,
+        report.freshness_summary.invalid_baseline_count,
         report.page,
         report.total_pages,
         report.page_size,
@@ -755,7 +805,8 @@ fn sarif_rules(mode: LintMode) -> Vec<SarifRule> {
         SarifRule {
             id: METADATA_RULE_ID.into(),
             short_description: SarifMessage {
-                text: "A touched key document is missing required review metadata.".into(),
+                text: "A touched governed required document is missing required review metadata."
+                    .into(),
             },
             default_configuration: SarifDefaultConfiguration {
                 level: level.clone(),
@@ -845,11 +896,12 @@ fn emit_annotations(diagnostics: &[DiagnosticRecord], mode: LintMode) {
 #[cfg(test)]
 mod tests {
     use crate::cli::{DiagnosticDetail, LintMode};
+    use crate::freshness::{FreshnessItem, FreshnessSummary, LintFreshnessReport};
 
     use super::{
         DIAGNOSTICS_SCHEMA_VERSION, Problem, SARIF_SCHEMA_URI, build_diagnostics_artifact,
-        build_report, build_report_from_artifact, build_sarif_log, build_sarif_log_from_artifact,
-        report_hint_lines,
+        build_diagnostics_artifact_with_freshness, build_report, build_report_from_artifact,
+        build_sarif_log, build_sarif_log_from_artifact, report_hint_lines,
     };
 
     fn review_problem(
@@ -873,6 +925,31 @@ mod tests {
 
     fn uncovered_problem(path: &str) -> Problem {
         Problem::uncovered_change(path.into())
+    }
+
+    fn lint_freshness_report() -> LintFreshnessReport {
+        LintFreshnessReport {
+            freshness_status: "has-critical-stale-doc".into(),
+            summary: FreshnessSummary {
+                governed_doc_count: 2,
+                fresh_doc_count: 0,
+                stale_doc_count: 2,
+                warn_count: 1,
+                critical_count: 1,
+                invalid_baseline_count: 1,
+            },
+            stale_docs: vec![FreshnessItem {
+                path: "docs/api.md".into(),
+                last_reviewed_commit: Some("abc123".into()),
+                last_reviewed_at: Some("2026-01-01".into()),
+                commits_since_review: Some(8),
+                days_since_review: Some(100),
+                associated_changed_paths: vec!["src/api/client.ts".into()],
+                associated_changed_paths_count: 1,
+                staleness_level: "critical".into(),
+                baseline_problems: vec!["invalid-lastReviewedCommit".into()],
+            }],
+        }
     }
 
     #[test]
@@ -906,7 +983,7 @@ mod tests {
 
     #[test]
     fn build_artifact_includes_coverage_summary_fields() {
-        let artifact = build_diagnostics_artifact(
+        let artifact = build_diagnostics_artifact_with_freshness(
             &[
                 review_problem(
                     "docs/api.md",
@@ -918,6 +995,7 @@ mod tests {
             ],
             &["src/payments/charge.ts".into(), "src/api/client.ts".into()],
             1,
+            Some(&lint_freshness_report()),
         );
 
         assert_eq!(
@@ -925,6 +1003,9 @@ mod tests {
             vec!["src/payments/charge.ts"]
         );
         assert_eq!(artifact.coverage_status, "has-uncovered-change");
+        assert_eq!(artifact.freshness_status, "has-critical-stale-doc");
+        assert_eq!(artifact.freshness_summary.critical_count, 1);
+        assert_eq!(artifact.stale_docs.len(), 1);
     }
 
     #[test]
@@ -1179,6 +1260,42 @@ mod tests {
                 .as_ref()
                 .map(|properties| properties.uncovered_changed_paths.clone()),
             Some(vec!["src/payments/charge.ts".into()])
+        );
+    }
+
+    #[test]
+    fn build_sarif_log_exposes_freshness_summary() {
+        let artifact = build_diagnostics_artifact_with_freshness(
+            &[review_problem(
+                "docs/api.md",
+                "repo-rule",
+                "review_or_update",
+                "required_doc_not_touched",
+            )],
+            &["src/api/client.ts".into()],
+            1,
+            Some(&lint_freshness_report()),
+        );
+        let sarif = build_sarif_log_from_artifact(&artifact, LintMode::Warn);
+        let run = &sarif.runs[0];
+
+        assert_eq!(
+            run.properties
+                .as_ref()
+                .map(|properties| properties.freshness_status.as_str()),
+            Some("has-critical-stale-doc")
+        );
+        assert_eq!(
+            run.properties
+                .as_ref()
+                .map(|properties| properties.freshness_summary.critical_count),
+            Some(1)
+        );
+        assert_eq!(
+            run.properties
+                .as_ref()
+                .map(|properties| properties.stale_docs[0].path.as_str()),
+            Some("docs/api.md")
         );
     }
 }

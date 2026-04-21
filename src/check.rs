@@ -13,12 +13,15 @@ use crate::config::{
 use crate::diagnostics::{
     display_report_path, resolve_report_output_path, write_diagnostics_artifact,
 };
+use crate::freshness::execute_lint_for_matched_rules;
 use crate::git::{FileComparison, get_changed_paths, get_file_comparison};
 use crate::metadata::{
     build_doc_problems, markdown_body, missing_markdown_review_metadata,
     missing_yaml_review_metadata_from_value, parse_frontmatter_scalar_values,
 };
-use crate::reporters::{Problem, build_diagnostics_artifact, emit_lint_output, emit_report_hint};
+use crate::reporters::{
+    Problem, build_diagnostics_artifact_with_freshness, emit_lint_output, emit_report_hint,
+};
 use crate::rules::{MatchedRule, RequiredDocMode, match_rules, matches_pattern};
 
 #[derive(Debug, Clone)]
@@ -31,8 +34,14 @@ pub struct CheckRun {
 pub fn run(args: LintArgs) -> Result<AppExit> {
     let run = execute(&args)?;
     let root_dir = root_dir_from_option(args.root.as_deref())?;
-    let artifact =
-        build_diagnostics_artifact(&run.problems, &run.changed_paths, run.matched_rules.len());
+    let lint_freshness =
+        execute_lint_for_matched_rules(&root_dir, args.config.as_deref(), &run.matched_rules)?;
+    let artifact = build_diagnostics_artifact_with_freshness(
+        &run.problems,
+        &run.changed_paths,
+        run.matched_rules.len(),
+        Some(&lint_freshness),
+    );
     let report_path = resolve_report_output_path(&root_dir, args.output.as_deref())?;
     write_diagnostics_artifact(&report_path, &artifact)?;
 
@@ -61,9 +70,11 @@ pub fn run(args: LintArgs) -> Result<AppExit> {
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.problem_type == "uncovered-change");
+    let has_critical_stale_doc = artifact.freshness_summary.critical_count > 0;
 
     if (args.mode == crate::cli::LintMode::Enforce && !artifact.diagnostics.is_empty())
         || (args.fail_on_uncovered_change && has_uncovered_change)
+        || (args.fail_on_stale_docs && has_critical_stale_doc)
     {
         Ok(AppExit::LintFailure)
     } else {
@@ -464,6 +475,7 @@ mod tests {
 
     use crate::cli::{LintArgs, LintMode, OutputFormat};
     use crate::config::{RequiredDoc, Rule, Trigger};
+    use crate::diagnostics::read_diagnostics_artifact;
     use crate::rules::{MatchedRule, RequiredDocMode};
 
     use super::{build_required_doc_problems, execute, run};
@@ -494,6 +506,7 @@ mod tests {
             diagnostics_page: 1,
             diagnostics_page_size: 5,
             fail_on_uncovered_change: false,
+            fail_on_stale_docs: false,
             output: None,
         }
     }
@@ -509,6 +522,23 @@ mod tests {
             "git command failed: git {}",
             args.join(" ")
         );
+    }
+
+    fn git_stdout(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git command failed: git {}",
+            args.join(" ")
+        );
+        String::from_utf8(output.stdout)
+            .expect("git stdout should be utf-8")
+            .trim()
+            .to_string()
     }
 
     fn init_git_repo(root: &Path) {
@@ -749,6 +779,74 @@ rules: []
 
         let exit = run(args).expect("lint should execute");
         assert_eq!(exit, crate::AppExit::LintFailure);
+    }
+
+    #[test]
+    fn fail_on_stale_docs_returns_lint_failure_and_writes_freshness_summary() {
+        let root = temp_dir("docpact-check-fail-on-stale");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/api")).expect("src dir");
+        fs::create_dir_all(root.join("docs")).expect("docs dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+freshness:
+  warn_after_commits: 99
+  warn_after_days: 2
+  critical_after_days: 3
+repo:
+  id: example
+rules:
+  - id: api-rule
+    scope: repo
+    repo: example
+    triggers:
+      - path: src/api/**
+        kind: code
+    requiredDocs:
+      - path: docs/api.md
+        mode: must_exist
+    reason: api
+"#,
+        )
+        .expect("config");
+        fs::write(root.join("src/api/client.ts"), "export const api = 1;\n").expect("src");
+        fs::write(
+            root.join("docs/api.md"),
+            "---\nlastReviewedAt: 2026-04-01\nlastReviewedCommit: pending\n---\n# API\n",
+        )
+        .expect("doc");
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-m", "base"]);
+        let base_commit = git_stdout(&root, &["rev-parse", "HEAD"]);
+        fs::write(
+            root.join("docs/api.md"),
+            format!(
+                "---\nlastReviewedAt: 2026-04-01\nlastReviewedCommit: {base_commit}\n---\n# API\n"
+            ),
+        )
+        .expect("doc baseline");
+        git(&root, &["add", "docs/api.md"]);
+        git(&root, &["commit", "-m", "record baseline"]);
+
+        let mut args = base_args(root.clone());
+        args.files = Some("src/api/client.ts".into());
+        args.fail_on_stale_docs = true;
+        args.output = Some(root.join(".docpact/runs/test-lint.json"));
+
+        let exit = run(args).expect("lint should execute");
+        assert_eq!(exit, crate::AppExit::LintFailure);
+
+        let artifact = read_diagnostics_artifact(&root.join(".docpact/runs/test-lint.json"))
+            .expect("artifact should be readable");
+        assert_eq!(artifact.freshness_status, "has-critical-stale-doc");
+        assert_eq!(artifact.freshness_summary.critical_count, 1);
+        assert_eq!(artifact.stale_docs.len(), 1);
+        assert_eq!(artifact.stale_docs[0].path, "docs/api.md");
     }
 
     #[test]
