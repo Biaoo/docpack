@@ -875,6 +875,7 @@ rules:
         let matched = vec![MatchedRule {
             changed_path: "src/index.ts".into(),
             source: ".docpact/config.yaml".into(),
+            config_source: ".docpact/config.yaml".into(),
             base_dir: String::new(),
             rule: Rule {
                 id: "repo-rule".into(),

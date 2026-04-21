@@ -24,6 +24,10 @@ pub struct ListedRule {
     pub repo: String,
     pub description: String,
     pub rule_source: String,
+    pub config_source: String,
+    pub provenance_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_profile: Option<String>,
     pub base_dir: String,
     pub trigger_count: usize,
     pub required_doc_count: usize,
@@ -86,6 +90,9 @@ pub fn execute(args: &ListRulesArgs) -> Result<ListRulesReport> {
                 repo: loaded.rule.repo,
                 description: loaded.rule.reason,
                 rule_source: loaded.source,
+                config_source: loaded.config_source,
+                provenance_kind: loaded.provenance.origin_kind.as_str().into(),
+                workspace_profile: loaded.provenance.workspace_profile,
                 base_dir: loaded.base_dir,
                 trigger_count: triggers.len(),
                 required_doc_count: required_docs.len(),
@@ -127,15 +134,20 @@ fn emit_text_report(report: &ListRulesReport) {
     println!("Rules:");
     for rule in &report.rules {
         println!(
-            "- rule_id={} source={} scope={} repo={} triggers={} required_docs={}",
+            "- rule_id={} source={} config_source={} origin={} scope={} repo={} triggers={} required_docs={}",
             rule.id,
             rule.rule_source,
+            rule.config_source,
+            rule.provenance_kind,
             rule.scope,
             rule.repo,
             rule.trigger_count,
             rule.required_doc_count,
         );
         println!("  description={}", rule.description);
+        if let Some(workspace_profile) = &rule.workspace_profile {
+            println!("  workspace_profile={workspace_profile}");
+        }
         if rule.triggers.is_empty() {
             println!("  triggers=none");
         } else {
@@ -224,6 +236,9 @@ rules:
         assert_eq!(rule.id, "api-docs");
         assert_eq!(rule.description, "Keep API docs aligned.");
         assert_eq!(rule.rule_source, ".docpact/config.yaml");
+        assert_eq!(rule.config_source, ".docpact/config.yaml");
+        assert_eq!(rule.provenance_kind, "root-local");
+        assert_eq!(rule.workspace_profile, None);
         assert_eq!(rule.triggers[0].path, "src/api/**");
         assert_eq!(rule.triggers[0].original_path, "src/api/**");
         assert_eq!(rule.required_docs[0].path, "docs/api.md");
@@ -239,7 +254,30 @@ rules:
             root.join(".docpact/config.yaml"),
             r#"version: 1
 layout: workspace
-rules: []
+workspace:
+  name: demo
+  profiles:
+    default:
+      rules:
+        - id: service-docs
+          scope: workspace
+          repo: workspace
+          triggers:
+            - path: src/**
+              kind: code
+          requiredDocs:
+            - path: docs/service.md
+          reason: Keep service docs aligned.
+rules:
+  - id: root-only
+    scope: workspace
+    repo: workspace
+    triggers:
+      - path: AGENTS.md
+        kind: doc
+    requiredDocs:
+      - path: .docpact/config.yaml
+    reason: Root rule.
 "#,
         )
         .expect("root config should be written");
@@ -247,28 +285,53 @@ rules: []
             root.join("service/.docpact/config.yaml"),
             r#"version: 1
 layout: repo
-rules:
-  - id: service-docs
-    scope: repo
-    repo: service
-    triggers:
-      - path: src/**
-        kind: code
-    requiredDocs:
-      - path: docs/service.md
-    reason: Keep service docs aligned.
+inherit:
+  workspace_profile: default
+overrides:
+  rules:
+    replace:
+      - id: service-docs
+        scope: repo
+        repo: service
+        triggers:
+          - path: src/**
+            kind: code
+        requiredDocs:
+          - path: docs/service.md
+        reason: Keep service docs aligned.
 "#,
         )
         .expect("workspace config should be written");
 
         let report = execute(&base_args(&root)).expect("list-rules should execute");
 
-        assert_eq!(report.rule_count, 1);
-        let rule = &report.rules[0];
-        assert_eq!(rule.rule_source, "service/.docpact/config.yaml");
-        assert_eq!(rule.base_dir, "service");
-        assert_eq!(rule.triggers[0].path, "service/src/**");
-        assert_eq!(rule.required_docs[0].path, "service/docs/service.md");
-        assert_eq!(rule.required_docs[0].mode, "review_or_update");
+        assert_eq!(report.rule_count, 2);
+        let inherited_rule = report
+            .rules
+            .iter()
+            .find(|rule| rule.id == "service-docs")
+            .expect("inherited rule should exist");
+        assert_eq!(
+            inherited_rule.rule_source,
+            "service/.docpact/config.yaml#overrides.rules.replace.service-docs"
+        );
+        assert_eq!(inherited_rule.config_source, "service/.docpact/config.yaml");
+        assert_eq!(inherited_rule.provenance_kind, "override-replace");
+        assert_eq!(inherited_rule.workspace_profile.as_deref(), Some("default"));
+        assert_eq!(inherited_rule.base_dir, "service");
+        assert_eq!(inherited_rule.triggers[0].path, "service/src/**");
+        assert_eq!(
+            inherited_rule.required_docs[0].path,
+            "service/docs/service.md"
+        );
+        assert_eq!(inherited_rule.required_docs[0].mode, "review_or_update");
+
+        let root_rule = report
+            .rules
+            .iter()
+            .find(|rule| rule.id == "root-only")
+            .expect("root rule should exist");
+        assert_eq!(root_rule.rule_source, ".docpact/config.yaml");
+        assert_eq!(root_rule.provenance_kind, "root-local");
     }
 }

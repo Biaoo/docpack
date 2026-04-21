@@ -41,6 +41,7 @@ impl fmt::Display for RequiredDocMode {
 pub struct MatchedRule {
     pub changed_path: String,
     pub source: String,
+    pub config_source: String,
     pub base_dir: String,
     pub rule: crate::config::Rule,
 }
@@ -127,6 +128,7 @@ pub fn match_rules(changed_paths: &[String], loaded_rules: &[LoadedRule]) -> Vec
                 matches.push(MatchedRule {
                     changed_path: changed_path.clone(),
                     source: loaded.source.clone(),
+                    config_source: loaded.config_source.clone(),
                     base_dir: loaded.base_dir.clone(),
                     rule: loaded.rule.clone(),
                 });
@@ -165,7 +167,7 @@ pub fn collect_expected_docs(matches: &[MatchedRule]) -> BTreeMap<String, Expect
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{LoadedRule, RequiredDoc, Rule, Trigger};
+    use crate::config::{LoadedRule, RequiredDoc, Rule, RuleOriginKind, RuleProvenance, Trigger};
 
     use super::{RequiredDocMode, collect_expected_docs, match_rules, matches_pattern};
 
@@ -187,7 +189,13 @@ mod tests {
         let loaded = vec![
             LoadedRule {
                 source: ".docpact/config.yaml".into(),
+                config_source: ".docpact/config.yaml".into(),
                 base_dir: String::new(),
+                provenance: RuleProvenance {
+                    config_source: ".docpact/config.yaml".into(),
+                    origin_kind: RuleOriginKind::RootLocal,
+                    workspace_profile: None,
+                },
                 rule: Rule {
                     id: "root-rule".into(),
                     scope: "workspace".into(),
@@ -205,7 +213,13 @@ mod tests {
             },
             LoadedRule {
                 source: "subrepo/.docpact/config.yaml".into(),
+                config_source: "subrepo/.docpact/config.yaml".into(),
                 base_dir: "subrepo".into(),
+                provenance: RuleProvenance {
+                    config_source: "subrepo/.docpact/config.yaml".into(),
+                    origin_kind: RuleOriginKind::RepoLocal,
+                    workspace_profile: None,
+                },
                 rule: Rule {
                     id: "repo-rule".into(),
                     scope: "repo".into(),

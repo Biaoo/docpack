@@ -1,0 +1,50 @@
+version: 1
+layout: repo
+lastReviewedAt: 2026-04-20
+lastReviewedCommit: example-workspace-child-config
+inherit:
+  workspace_profile: default
+overrides:
+  rules:
+    add:
+      - id: sample-sdk-payments
+        scope: repo
+        repo: sample-sdk
+        triggers:
+          - path: src/payments/**
+            kind: code
+        requiredDocs:
+          - path: docs/payments.md
+            mode: review_or_update
+        reason: Payments changes require a local domain document.
+    replace:
+      - id: repo-bootstrap
+        scope: repo
+        repo: sample-sdk
+        triggers:
+          - path: src/**
+            kind: code
+          - path: .docpact/**
+            kind: doc-ai-layer
+        requiredDocs:
+          - path: README.md
+            mode: body_update_required
+          - path: .docpact/config.yaml
+            mode: metadata_refresh_required
+        reason: sample-sdk uses stricter bootstrap requirements than the workspace default.
+  coverage:
+    mode: merge
+    include:
+      - tests/**
+  docInventory:
+    mode: replace
+    include:
+      - README.md
+      - docs/**
+      - .docpact/**/*.md
+      - .docpact/**/*.yaml
+  freshness:
+    mode: replace
+    warn_after_commits: 20
+    warn_after_days: 30
+    critical_after_days: 60

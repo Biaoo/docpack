@@ -4,8 +4,9 @@ use crate::AppExit;
 use crate::cli::ValidateConfigArgs;
 use crate::config::{
     load_coverage_configs, load_doc_inventory_configs, load_freshness_configs, load_impact_files,
-    root_dir_from_option, validate_loaded_coverage_configs, validate_loaded_doc_inventory_configs,
-    validate_loaded_freshness_configs, validate_loaded_rules,
+    root_dir_from_option, validate_config_graph, validate_loaded_coverage_configs,
+    validate_loaded_doc_inventory_configs, validate_loaded_freshness_configs,
+    validate_loaded_rules,
 };
 
 pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
@@ -23,7 +24,8 @@ pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
         return Ok(AppExit::Success);
     }
 
-    let mut problems = validate_loaded_rules(&rules);
+    let mut problems = validate_config_graph(&root_dir, args.config.as_deref())?;
+    problems.extend(validate_loaded_rules(&rules));
     problems.extend(validate_loaded_coverage_configs(&coverage_configs));
     problems.extend(validate_loaded_freshness_configs(&freshness_configs));
     problems.extend(validate_loaded_doc_inventory_configs(

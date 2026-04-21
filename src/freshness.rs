@@ -182,7 +182,7 @@ fn build_governed_doc_contexts(
 
     for loaded in loaded_rules {
         let thresholds = freshness_by_source
-            .get(&loaded.source)
+            .get(&loaded.config_source)
             .cloned()
             .unwrap_or_default();
         let associated_patterns = loaded
@@ -218,7 +218,7 @@ fn build_governed_doc_contexts_from_matched_rules(
 
     for matched in matched_rules {
         let thresholds = freshness_by_source
-            .get(&matched.source)
+            .get(&matched.config_source)
             .cloned()
             .unwrap_or_default();
         let associated_patterns = matched

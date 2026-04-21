@@ -3,14 +3,13 @@ use std::path::{Path, PathBuf};
 
 use miette::Result;
 use serde::Serialize;
-use yaml_serde::Value;
 
 use crate::AppExit;
 use crate::cli::{DoctorArgs, DoctorOutputFormat};
 use crate::config::{
-    CONFIG_FILE, ImpactLayout, detect_impact_layout, list_impact_files, load_coverage_configs,
-    load_doc_inventory_configs, load_freshness_configs, load_impact_files, load_yaml_value,
-    normalize_path, path_relative_to, resolve_rule_path, root_dir_from_option,
+    CONFIG_FILE, ConfigBlockSourceKind, EffectiveConfig, ImpactLayout, detect_impact_layout,
+    load_effective_configs, normalize_path, path_relative_to, resolve_rule_path,
+    root_dir_from_option,
 };
 
 pub const DOCTOR_SCHEMA_VERSION: &str = "docpact.doctor.v1";
@@ -29,6 +28,7 @@ pub struct DoctorReport {
     pub tool_name: String,
     pub tool_version: String,
     pub summary: DoctorSummary,
+    pub configs: Vec<DoctorConfig>,
     pub findings: Vec<DoctorFinding>,
 }
 
@@ -36,11 +36,30 @@ pub struct DoctorReport {
 pub struct DoctorSummary {
     pub config_present: bool,
     pub layout: String,
+    pub effective_config_count: usize,
+    pub inherited_config_count: usize,
     pub rule_count: usize,
     pub coverage_configured: bool,
     pub doc_inventory_configured: bool,
     pub freshness_configured: bool,
     pub governed_doc_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DoctorConfig {
+    pub source: String,
+    pub base_dir: String,
+    pub rule_count: usize,
+    pub governed_doc_count: usize,
+    pub inheritance_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_profile: Option<String>,
+    pub coverage_resolution: String,
+    pub doc_inventory_resolution: String,
+    pub freshness_resolution: String,
+    pub override_add_count: usize,
+    pub override_replace_count: usize,
+    pub override_disable_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -66,12 +85,6 @@ impl DoctorSeverity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigBlock {
-    Coverage,
-    DocInventory,
-}
-
 pub fn run(args: DoctorArgs) -> Result<AppExit> {
     let report = execute(&args)?;
     emit_report(&report, args.format);
@@ -88,12 +101,15 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
             DoctorSummary {
                 config_present: false,
                 layout: "none".into(),
+                effective_config_count: 0,
+                inherited_config_count: 0,
                 rule_count: 0,
                 coverage_configured: false,
                 doc_inventory_configured: false,
                 freshness_configured: false,
                 governed_doc_count: 0,
             },
+            Vec::new(),
             vec![DoctorFinding {
                 code: CODE_MISSING_CONFIG.into(),
                 severity: DoctorSeverity::Error.as_str().into(),
@@ -115,12 +131,15 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
                 DoctorSummary {
                     config_present: true,
                     layout: "unknown".into(),
+                    effective_config_count: 0,
+                    inherited_config_count: 0,
                     rule_count: 0,
                     coverage_configured: false,
                     doc_inventory_configured: false,
                     freshness_configured: false,
                     governed_doc_count: 0,
                 },
+                Vec::new(),
                 vec![DoctorFinding {
                     code: CODE_CONFIG_LOAD_FAILED.into(),
                     severity: DoctorSeverity::Error.as_str().into(),
@@ -131,8 +150,8 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
         }
     };
 
-    let impact_files = match list_impact_files(&root_dir, args.config.as_deref()) {
-        Ok(files) => files,
+    let effective_configs = match load_effective_configs(&root_dir, args.config.as_deref()) {
+        Ok(configs) => configs,
         Err(error) => {
             let message = error.to_string();
             let source = extract_config_source(&message).unwrap_or_else(|| config_source.clone());
@@ -140,12 +159,15 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
                 DoctorSummary {
                     config_present: true,
                     layout: layout_label(layout).into(),
+                    effective_config_count: 0,
+                    inherited_config_count: 0,
                     rule_count: 0,
                     coverage_configured: false,
                     doc_inventory_configured: false,
                     freshness_configured: false,
                     governed_doc_count: 0,
                 },
+                Vec::new(),
                 vec![DoctorFinding {
                     code: CODE_CONFIG_LOAD_FAILED.into(),
                     severity: DoctorSeverity::Error.as_str().into(),
@@ -156,55 +178,45 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
         }
     };
 
-    let loaded_rules = match load_impact_files(&root_dir, args.config.as_deref()) {
-        Ok(rules) => rules,
-        Err(error) => {
-            let message = error.to_string();
-            let source = extract_config_source(&message).unwrap_or_else(|| config_source.clone());
-            return Ok(report_with_findings(
-                DoctorSummary {
-                    config_present: true,
-                    layout: layout_label(layout).into(),
-                    rule_count: 0,
-                    coverage_configured: false,
-                    doc_inventory_configured: false,
-                    freshness_configured: false,
-                    governed_doc_count: 0,
-                },
-                vec![DoctorFinding {
-                    code: CODE_CONFIG_LOAD_FAILED.into(),
-                    severity: DoctorSeverity::Error.as_str().into(),
-                    message,
-                    source,
-                }],
-            ));
-        }
-    };
-
-    let coverage_configured = has_effective_coverage_scope(&root_dir, &impact_files)?;
-    let doc_inventory_configured = has_effective_doc_inventory_scope(&root_dir, &impact_files)?;
-    let freshness_configured = has_explicit_freshness_config(&root_dir, &impact_files)?;
-
-    let _ = load_coverage_configs(&root_dir, args.config.as_deref())?;
-    let _ = load_doc_inventory_configs(&root_dir, args.config.as_deref())?;
-    let _ = load_freshness_configs(&root_dir, args.config.as_deref())?;
-
-    let governed_doc_count = loaded_rules
+    let configs = build_doctor_configs(&effective_configs);
+    let rule_count = effective_configs
         .iter()
-        .flat_map(|loaded| {
-            loaded
-                .rule
-                .required_docs
-                .iter()
-                .map(|doc| resolve_rule_path(&loaded.base_dir, &doc.path))
+        .map(|config| config.rules.len())
+        .sum();
+    let governed_doc_count = effective_configs
+        .iter()
+        .flat_map(|config| {
+            config.rules.iter().flat_map(|loaded| {
+                loaded
+                    .rule
+                    .required_docs
+                    .iter()
+                    .map(|doc| resolve_rule_path(&loaded.base_dir, &doc.path))
+            })
         })
         .collect::<BTreeSet<_>>()
         .len();
+    let coverage_configured = effective_configs.iter().any(|config| {
+        !config.coverage.coverage.include.is_empty() || !config.coverage.coverage.exclude.is_empty()
+    });
+    let doc_inventory_configured = effective_configs.iter().any(|config| {
+        !config.doc_inventory.doc_inventory.include.is_empty()
+            || !config.doc_inventory.doc_inventory.exclude.is_empty()
+    });
+    let freshness_configured = effective_configs
+        .iter()
+        .any(|config| config.freshness.resolution.origin_kind != ConfigBlockSourceKind::Default);
+    let inherited_config_count = effective_configs
+        .iter()
+        .filter(|config| config.inheritance.is_some())
+        .count();
 
     let summary = DoctorSummary {
         config_present: true,
         layout: layout_label(layout).into(),
-        rule_count: loaded_rules.len(),
+        effective_config_count: effective_configs.len(),
+        inherited_config_count,
+        rule_count,
         coverage_configured,
         doc_inventory_configured,
         freshness_configured,
@@ -276,15 +288,20 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
         ))
     });
 
-    Ok(report_with_findings(summary, findings))
+    Ok(report_with_findings(summary, configs, findings))
 }
 
-fn report_with_findings(summary: DoctorSummary, findings: Vec<DoctorFinding>) -> DoctorReport {
+fn report_with_findings(
+    summary: DoctorSummary,
+    configs: Vec<DoctorConfig>,
+    findings: Vec<DoctorFinding>,
+) -> DoctorReport {
     DoctorReport {
         schema_version: DOCTOR_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
         summary,
+        configs,
         findings,
     }
 }
@@ -302,15 +319,46 @@ fn emit_report(report: &DoctorReport, format: DoctorOutputFormat) {
 fn emit_text_report(report: &DoctorReport) {
     println!("Docpact doctor:");
     println!(
-        "Summary: config_present={}, layout={}, rule_count={}, coverage_configured={}, doc_inventory_configured={}, freshness_configured={}, governed_doc_count={}",
+        "Summary: config_present={}, layout={}, effective_configs={}, inherited_configs={}, rule_count={}, coverage_configured={}, doc_inventory_configured={}, freshness_configured={}, governed_doc_count={}",
         report.summary.config_present,
         report.summary.layout,
+        report.summary.effective_config_count,
+        report.summary.inherited_config_count,
         report.summary.rule_count,
         report.summary.coverage_configured,
         report.summary.doc_inventory_configured,
         report.summary.freshness_configured,
         report.summary.governed_doc_count,
     );
+    println!("Configs:");
+    if report.configs.is_empty() {
+        println!("- none");
+    } else {
+        for config in &report.configs {
+            println!(
+                "- source={} base_dir={} inherited={} profile={} rules={} governed_docs={} coverage_resolution={} doc_inventory_resolution={} freshness_resolution={} overrides(add={},replace={},disable={})",
+                config.source,
+                if config.base_dir.is_empty() {
+                    ".".to_string()
+                } else {
+                    config.base_dir.clone()
+                },
+                config.inheritance_enabled,
+                config
+                    .workspace_profile
+                    .clone()
+                    .unwrap_or_else(|| "-".into()),
+                config.rule_count,
+                config.governed_doc_count,
+                config.coverage_resolution,
+                config.doc_inventory_resolution,
+                config.freshness_resolution,
+                config.override_add_count,
+                config.override_replace_count,
+                config.override_disable_count,
+            );
+        }
+    }
     println!("Findings:");
     if report.findings.is_empty() {
         println!("- none");
@@ -360,81 +408,59 @@ fn extract_config_source(message: &str) -> Option<String> {
     None
 }
 
-fn has_effective_coverage_scope(
-    root_dir: &Path,
-    impact_files: &[crate::config::ImpactFileDescriptor],
-) -> Result<bool> {
-    has_effective_block(root_dir, impact_files, ConfigBlock::Coverage)
-}
+fn build_doctor_configs(effective_configs: &[EffectiveConfig]) -> Vec<DoctorConfig> {
+    effective_configs
+        .iter()
+        .map(|config| {
+            let governed_doc_count = config
+                .rules
+                .iter()
+                .flat_map(|loaded| {
+                    loaded
+                        .rule
+                        .required_docs
+                        .iter()
+                        .map(|doc| resolve_rule_path(&loaded.base_dir, &doc.path))
+                })
+                .collect::<BTreeSet<_>>()
+                .len();
 
-fn has_effective_doc_inventory_scope(
-    root_dir: &Path,
-    impact_files: &[crate::config::ImpactFileDescriptor],
-) -> Result<bool> {
-    has_effective_block(root_dir, impact_files, ConfigBlock::DocInventory)
-}
-
-fn has_explicit_freshness_config(
-    root_dir: &Path,
-    impact_files: &[crate::config::ImpactFileDescriptor],
-) -> Result<bool> {
-    for descriptor in impact_files {
-        let value = load_yaml_value(&descriptor.abs_path, &descriptor.rel_path)?;
-        if top_level_mapping_has_key(&value, "freshness") {
-            return Ok(true);
-        }
-    }
-
-    let _ = root_dir;
-    Ok(false)
-}
-
-fn has_effective_block(
-    root_dir: &Path,
-    impact_files: &[crate::config::ImpactFileDescriptor],
-    block: ConfigBlock,
-) -> Result<bool> {
-    for descriptor in impact_files {
-        let value = load_yaml_value(&descriptor.abs_path, &descriptor.rel_path)?;
-        if block_has_non_empty_patterns(&value, block) {
-            return Ok(true);
-        }
-    }
-
-    let _ = root_dir;
-    Ok(false)
-}
-
-fn top_level_mapping_has_key(value: &Value, key: &str) -> bool {
-    let Value::Mapping(mapping) = value else {
-        return false;
-    };
-    mapping.contains_key(Value::String(key.to_string()))
-}
-
-fn block_has_non_empty_patterns(value: &Value, block: ConfigBlock) -> bool {
-    let block_name = match block {
-        ConfigBlock::Coverage => "coverage",
-        ConfigBlock::DocInventory => "docInventory",
-    };
-    let Value::Mapping(root_mapping) = value else {
-        return false;
-    };
-    let Some(Value::Mapping(block_mapping)) = root_mapping.get(Value::String(block_name.into()))
-    else {
-        return false;
-    };
-
-    for key in ["include", "exclude"] {
-        let Some(Value::Sequence(sequence)) = block_mapping.get(Value::String(key.into())) else {
-            continue;
-        };
-        if !sequence.is_empty() {
-            return true;
-        }
-    }
-
-    false
+            DoctorConfig {
+                source: config.source.clone(),
+                base_dir: config.base_dir.clone(),
+                rule_count: config.rules.len(),
+                governed_doc_count,
+                inheritance_enabled: config.inheritance.is_some(),
+                workspace_profile: config
+                    .inheritance
+                    .as_ref()
+                    .map(|inheritance| inheritance.workspace_profile.clone()),
+                coverage_resolution: config.coverage.resolution.origin_kind.as_str().into(),
+                doc_inventory_resolution: config
+                    .doc_inventory
+                    .resolution
+                    .origin_kind
+                    .as_str()
+                    .into(),
+                freshness_resolution: config.freshness.resolution.origin_kind.as_str().into(),
+                override_add_count: config
+                    .inheritance
+                    .as_ref()
+                    .map(|inheritance| inheritance.add_count)
+                    .unwrap_or(0),
+                override_replace_count: config
+                    .inheritance
+                    .as_ref()
+                    .map(|inheritance| inheritance.replace_count)
+                    .unwrap_or(0),
+                override_disable_count: config
+                    .inheritance
+                    .as_ref()
+                    .map(|inheritance| inheritance.disable_count)
+                    .unwrap_or(0),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -590,5 +616,129 @@ rules:
         assert!(report.summary.freshness_configured);
         assert_eq!(report.summary.governed_doc_count, 1);
         assert!(report.findings.is_empty());
+    }
+
+    #[test]
+    fn doctor_reports_inheritance_and_override_details() {
+        let root = temp_dir("docpact-doctor-inheritance");
+        fs::create_dir_all(root.join(".docpact")).expect("doc root should exist");
+        fs::create_dir_all(root.join("service/.docpact")).expect("service doc root should exist");
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"version: 1
+layout: workspace
+workspace:
+  name: demo
+  profiles:
+    default:
+      coverage:
+        include:
+          - src/**
+      docInventory:
+        include:
+          - docs/**
+      freshness:
+        warn_after_commits: 10
+        warn_after_days: 30
+        critical_after_days: 60
+      rules:
+        - id: inherited-rule
+          scope: workspace
+          repo: workspace
+          triggers:
+            - path: src/**
+              kind: code
+          requiredDocs:
+            - path: docs/guide.md
+          reason: inherited
+        - id: inherited-disable
+          scope: workspace
+          repo: workspace
+          triggers:
+            - path: src/legacy/**
+              kind: code
+          requiredDocs:
+            - path: docs/legacy.md
+          reason: disable me
+rules:
+  - id: root-only
+    scope: workspace
+    repo: workspace
+    triggers:
+      - path: AGENTS.md
+        kind: doc
+    requiredDocs:
+      - path: .docpact/config.yaml
+    reason: root
+"#,
+        )
+        .expect("root config");
+        fs::write(
+            root.join("service/.docpact/config.yaml"),
+            r#"version: 1
+layout: repo
+inherit:
+  workspace_profile: default
+overrides:
+  rules:
+    add:
+      - id: local-extra
+        scope: repo
+        repo: service
+        triggers:
+          - path: src/payments/**
+            kind: code
+        requiredDocs:
+          - path: docs/payments.md
+        reason: local
+    replace:
+      - id: inherited-rule
+        scope: repo
+        repo: service
+        triggers:
+          - path: src/app/**
+            kind: code
+        requiredDocs:
+          - path: docs/app.md
+        reason: replaced
+    disable:
+      - id: inherited-disable
+        reason: not applicable
+  coverage:
+    mode: merge
+    include:
+      - tests/**
+  docInventory:
+    mode: replace
+    include:
+      - README.md
+  freshness:
+    mode: replace
+    warn_after_commits: 21
+    warn_after_days: 34
+    critical_after_days: 55
+"#,
+        )
+        .expect("service config");
+
+        let report = execute(&base_args(&root)).expect("doctor should execute");
+
+        assert_eq!(report.summary.layout, "workspace");
+        assert_eq!(report.summary.effective_config_count, 2);
+        assert_eq!(report.summary.inherited_config_count, 1);
+
+        let service = report
+            .configs
+            .iter()
+            .find(|config| config.base_dir == "service")
+            .expect("service config should exist");
+        assert!(service.inheritance_enabled);
+        assert_eq!(service.workspace_profile.as_deref(), Some("default"));
+        assert_eq!(service.override_add_count, 1);
+        assert_eq!(service.override_replace_count, 1);
+        assert_eq!(service.override_disable_count, 1);
+        assert_eq!(service.coverage_resolution, "override-merge");
+        assert_eq!(service.doc_inventory_resolution, "override-replace");
+        assert_eq!(service.freshness_resolution, "override-replace");
     }
 }

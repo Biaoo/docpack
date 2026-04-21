@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -29,17 +29,112 @@ enum ConfigLayout {
     Repo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverrideMode {
+    Merge,
+    Replace,
+}
+
+impl OverrideMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Replace => "replace",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct ConfigFile {
     layout: ConfigLayout,
     #[serde(default)]
-    coverage: CoverageConfig,
+    coverage: Option<CoverageConfig>,
     #[serde(default)]
-    freshness: FreshnessConfig,
+    freshness: Option<FreshnessConfig>,
     #[serde(rename = "docInventory", default)]
-    doc_inventory: DocInventoryConfig,
+    doc_inventory: Option<DocInventoryConfig>,
     #[serde(default)]
     rules: Vec<Rule>,
+    #[serde(default)]
+    workspace: Option<WorkspaceSection>,
+    #[serde(default)]
+    inherit: Option<InheritConfig>,
+    #[serde(default)]
+    overrides: Option<OverridesConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+struct WorkspaceSection {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub profiles: BTreeMap<String, WorkspaceProfile>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+struct WorkspaceProfile {
+    #[serde(default)]
+    pub coverage: Option<CoverageConfig>,
+    #[serde(default)]
+    pub freshness: Option<FreshnessConfig>,
+    #[serde(rename = "docInventory", default)]
+    pub doc_inventory: Option<DocInventoryConfig>,
+    #[serde(default)]
+    pub rules: Vec<Rule>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct InheritConfig {
+    pub workspace_profile: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+struct OverridesConfig {
+    #[serde(default)]
+    pub rules: RuleOverrides,
+    #[serde(default)]
+    pub coverage: Option<ScopedPatternOverride>,
+    #[serde(rename = "docInventory", default)]
+    pub doc_inventory: Option<ScopedPatternOverride>,
+    #[serde(default)]
+    pub freshness: Option<FreshnessOverride>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+struct RuleOverrides {
+    #[serde(default)]
+    pub add: Vec<Rule>,
+    #[serde(default)]
+    pub replace: Vec<Rule>,
+    #[serde(default)]
+    pub disable: Vec<RuleDisable>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RuleDisable {
+    pub id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct ScopedPatternOverride {
+    pub mode: OverrideMode,
+    #[serde(default)]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct FreshnessOverride {
+    pub mode: OverrideMode,
+    #[serde(default = "default_warn_after_commits")]
+    pub warn_after_commits: usize,
+    #[serde(default = "default_warn_after_days")]
+    pub warn_after_days: usize,
+    #[serde(default = "default_critical_after_days")]
+    pub critical_after_days: usize,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -109,11 +204,69 @@ pub struct ImpactFileDescriptor {
     pub base_dir: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleOriginKind {
+    RootLocal,
+    RepoLocal,
+    WorkspaceProfile,
+    OverrideAdd,
+    OverrideReplace,
+}
+
+impl RuleOriginKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RootLocal => "root-local",
+            Self::RepoLocal => "repo-local",
+            Self::WorkspaceProfile => "workspace-profile",
+            Self::OverrideAdd => "override-add",
+            Self::OverrideReplace => "override-replace",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleProvenance {
+    pub config_source: String,
+    pub origin_kind: RuleOriginKind,
+    pub workspace_profile: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedRule {
     pub source: String,
+    pub config_source: String,
     pub base_dir: String,
     pub rule: Rule,
+    pub provenance: RuleProvenance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigBlockSourceKind {
+    Local,
+    WorkspaceProfile,
+    OverrideMerge,
+    OverrideReplace,
+    Default,
+}
+
+impl ConfigBlockSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::WorkspaceProfile => "workspace-profile",
+            Self::OverrideMerge => "override-merge",
+            Self::OverrideReplace => "override-replace",
+            Self::Default => "default",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockResolution {
+    pub origin_kind: ConfigBlockSourceKind,
+    pub workspace_profile: Option<String>,
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +274,7 @@ pub struct LoadedCoverageConfig {
     pub source: String,
     pub base_dir: String,
     pub coverage: CoverageConfig,
+    pub resolution: BlockResolution,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +282,7 @@ pub struct LoadedFreshnessConfig {
     pub source: String,
     pub base_dir: String,
     pub freshness: FreshnessConfig,
+    pub resolution: BlockResolution,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +290,30 @@ pub struct LoadedDocInventoryConfig {
     pub source: String,
     pub base_dir: String,
     pub doc_inventory: DocInventoryConfig,
+    pub resolution: BlockResolution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InheritanceResolution {
+    pub workspace_profile: String,
+    pub add_count: usize,
+    pub replace_count: usize,
+    pub disable_count: usize,
+    pub disabled_rule_ids: Vec<String>,
+    pub coverage_mode: Option<String>,
+    pub doc_inventory_mode: Option<String>,
+    pub freshness_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveConfig {
+    pub source: String,
+    pub base_dir: String,
+    pub rules: Vec<LoadedRule>,
+    pub coverage: LoadedCoverageConfig,
+    pub freshness: LoadedFreshnessConfig,
+    pub doc_inventory: LoadedDocInventoryConfig,
+    pub inheritance: Option<InheritanceResolution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +321,12 @@ pub struct ConfigValidationProblem {
     pub source: String,
     pub rule_id: Option<String>,
     pub message: String,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedImpactFile {
+    descriptor: ImpactFileDescriptor,
+    parsed: ConfigFile,
 }
 
 pub fn normalize_path(value: &str) -> String {
@@ -294,21 +479,52 @@ fn list_workspace_repo_files(root_dir: &Path) -> Result<Vec<ImpactFileDescriptor
     Ok(results)
 }
 
+fn load_parsed_impact_files(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<ParsedImpactFile>> {
+    let mut parsed_files = Vec::new();
+
+    for descriptor in list_impact_files(root_dir, config_override)? {
+        parsed_files.push(ParsedImpactFile {
+            parsed: load_config_file(&descriptor.abs_path, &descriptor.rel_path)?,
+            descriptor,
+        });
+    }
+
+    Ok(parsed_files)
+}
+
+pub fn load_effective_configs(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<EffectiveConfig>> {
+    let parsed_files = load_parsed_impact_files(root_dir, config_override)?;
+    if parsed_files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let root = &parsed_files[0];
+    match root.parsed.layout {
+        ConfigLayout::Repo => Ok(vec![resolve_repo_local_effective_config(root)?]),
+        ConfigLayout::Workspace => {
+            let mut effective = vec![resolve_workspace_root_effective_config(root)?];
+            for child in parsed_files.iter().skip(1) {
+                effective.push(resolve_workspace_child_effective_config(root, child)?);
+            }
+            Ok(effective)
+        }
+    }
+}
+
 pub fn load_impact_files(
     root_dir: &Path,
     config_override: Option<&Path>,
 ) -> Result<Vec<LoadedRule>> {
     let mut loaded = Vec::new();
 
-    for descriptor in list_impact_files(root_dir, config_override)? {
-        let parsed = load_config_file(&descriptor.abs_path, &descriptor.rel_path)?;
-        for rule in parsed.rules {
-            loaded.push(LoadedRule {
-                source: descriptor.rel_path.clone(),
-                base_dir: descriptor.base_dir.clone(),
-                rule,
-            });
-        }
+    for effective in load_effective_configs(root_dir, config_override)? {
+        loaded.extend(effective.rules);
     }
 
     Ok(loaded)
@@ -318,54 +534,604 @@ pub fn load_coverage_configs(
     root_dir: &Path,
     config_override: Option<&Path>,
 ) -> Result<Vec<LoadedCoverageConfig>> {
-    let mut loaded = Vec::new();
-
-    for descriptor in list_impact_files(root_dir, config_override)? {
-        let parsed = load_config_file(&descriptor.abs_path, &descriptor.rel_path)?;
-        loaded.push(LoadedCoverageConfig {
-            source: descriptor.rel_path,
-            base_dir: descriptor.base_dir,
-            coverage: parsed.coverage,
-        });
-    }
-
-    Ok(loaded)
+    Ok(load_effective_configs(root_dir, config_override)?
+        .into_iter()
+        .map(|effective| effective.coverage)
+        .collect())
 }
 
 pub fn load_freshness_configs(
     root_dir: &Path,
     config_override: Option<&Path>,
 ) -> Result<Vec<LoadedFreshnessConfig>> {
-    let mut loaded = Vec::new();
-
-    for descriptor in list_impact_files(root_dir, config_override)? {
-        let parsed = load_config_file(&descriptor.abs_path, &descriptor.rel_path)?;
-        loaded.push(LoadedFreshnessConfig {
-            source: descriptor.rel_path,
-            base_dir: descriptor.base_dir,
-            freshness: parsed.freshness,
-        });
-    }
-
-    Ok(loaded)
+    Ok(load_effective_configs(root_dir, config_override)?
+        .into_iter()
+        .map(|effective| effective.freshness)
+        .collect())
 }
 
 pub fn load_doc_inventory_configs(
     root_dir: &Path,
     config_override: Option<&Path>,
 ) -> Result<Vec<LoadedDocInventoryConfig>> {
-    let mut loaded = Vec::new();
+    Ok(load_effective_configs(root_dir, config_override)?
+        .into_iter()
+        .map(|effective| effective.doc_inventory)
+        .collect())
+}
 
-    for descriptor in list_impact_files(root_dir, config_override)? {
-        let parsed = load_config_file(&descriptor.abs_path, &descriptor.rel_path)?;
-        loaded.push(LoadedDocInventoryConfig {
-            source: descriptor.rel_path,
-            base_dir: descriptor.base_dir,
-            doc_inventory: parsed.doc_inventory,
-        });
+pub fn validate_config_graph(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<ConfigValidationProblem>> {
+    let parsed_files = load_parsed_impact_files(root_dir, config_override)?;
+    Ok(validate_parsed_configs(&parsed_files))
+}
+
+fn resolve_repo_local_effective_config(parsed: &ParsedImpactFile) -> Result<EffectiveConfig> {
+    if parsed.parsed.inherit.is_some() {
+        bail!(
+            "{} declares `inherit`, but workspace inheritance is only available when a workspace root config is the active entrypoint",
+            parsed.descriptor.rel_path
+        );
+    }
+    if parsed.parsed.overrides.is_some() {
+        bail!(
+            "{} declares `overrides` without `inherit.workspace_profile`",
+            parsed.descriptor.rel_path
+        );
     }
 
-    Ok(loaded)
+    Ok(EffectiveConfig {
+        source: parsed.descriptor.rel_path.clone(),
+        base_dir: parsed.descriptor.base_dir.clone(),
+        rules: parsed
+            .parsed
+            .rules
+            .iter()
+            .cloned()
+            .map(|rule| LoadedRule {
+                source: parsed.descriptor.rel_path.clone(),
+                config_source: parsed.descriptor.rel_path.clone(),
+                base_dir: parsed.descriptor.base_dir.clone(),
+                provenance: RuleProvenance {
+                    config_source: parsed.descriptor.rel_path.clone(),
+                    origin_kind: if parsed.descriptor.base_dir.is_empty() {
+                        RuleOriginKind::RootLocal
+                    } else {
+                        RuleOriginKind::RepoLocal
+                    },
+                    workspace_profile: None,
+                },
+                rule,
+            })
+            .collect(),
+        coverage: LoadedCoverageConfig {
+            source: parsed.descriptor.rel_path.clone(),
+            base_dir: parsed.descriptor.base_dir.clone(),
+            coverage: parsed.parsed.coverage.clone().unwrap_or_default(),
+            resolution: BlockResolution {
+                origin_kind: if parsed.parsed.coverage.is_some() {
+                    ConfigBlockSourceKind::Local
+                } else {
+                    ConfigBlockSourceKind::Default
+                },
+                workspace_profile: None,
+                mode: None,
+            },
+        },
+        freshness: LoadedFreshnessConfig {
+            source: parsed.descriptor.rel_path.clone(),
+            base_dir: parsed.descriptor.base_dir.clone(),
+            freshness: parsed.parsed.freshness.clone().unwrap_or_default(),
+            resolution: BlockResolution {
+                origin_kind: if parsed.parsed.freshness.is_some() {
+                    ConfigBlockSourceKind::Local
+                } else {
+                    ConfigBlockSourceKind::Default
+                },
+                workspace_profile: None,
+                mode: None,
+            },
+        },
+        doc_inventory: LoadedDocInventoryConfig {
+            source: parsed.descriptor.rel_path.clone(),
+            base_dir: parsed.descriptor.base_dir.clone(),
+            doc_inventory: parsed.parsed.doc_inventory.clone().unwrap_or_default(),
+            resolution: BlockResolution {
+                origin_kind: if parsed.parsed.doc_inventory.is_some() {
+                    ConfigBlockSourceKind::Local
+                } else {
+                    ConfigBlockSourceKind::Default
+                },
+                workspace_profile: None,
+                mode: None,
+            },
+        },
+        inheritance: None,
+    })
+}
+
+fn resolve_workspace_root_effective_config(root: &ParsedImpactFile) -> Result<EffectiveConfig> {
+    if root.parsed.inherit.is_some() {
+        bail!(
+            "{} must not declare `inherit` because workspace roots cannot inherit from another config",
+            root.descriptor.rel_path
+        );
+    }
+    if root.parsed.overrides.is_some() {
+        bail!(
+            "{} must not declare `overrides` because workspace roots define local config and reusable profiles directly",
+            root.descriptor.rel_path
+        );
+    }
+
+    Ok(EffectiveConfig {
+        source: root.descriptor.rel_path.clone(),
+        base_dir: root.descriptor.base_dir.clone(),
+        rules: root
+            .parsed
+            .rules
+            .iter()
+            .cloned()
+            .map(|rule| LoadedRule {
+                source: root.descriptor.rel_path.clone(),
+                config_source: root.descriptor.rel_path.clone(),
+                base_dir: root.descriptor.base_dir.clone(),
+                provenance: RuleProvenance {
+                    config_source: root.descriptor.rel_path.clone(),
+                    origin_kind: RuleOriginKind::RootLocal,
+                    workspace_profile: None,
+                },
+                rule,
+            })
+            .collect(),
+        coverage: LoadedCoverageConfig {
+            source: root.descriptor.rel_path.clone(),
+            base_dir: root.descriptor.base_dir.clone(),
+            coverage: root.parsed.coverage.clone().unwrap_or_default(),
+            resolution: BlockResolution {
+                origin_kind: if root.parsed.coverage.is_some() {
+                    ConfigBlockSourceKind::Local
+                } else {
+                    ConfigBlockSourceKind::Default
+                },
+                workspace_profile: None,
+                mode: None,
+            },
+        },
+        freshness: LoadedFreshnessConfig {
+            source: root.descriptor.rel_path.clone(),
+            base_dir: root.descriptor.base_dir.clone(),
+            freshness: root.parsed.freshness.clone().unwrap_or_default(),
+            resolution: BlockResolution {
+                origin_kind: if root.parsed.freshness.is_some() {
+                    ConfigBlockSourceKind::Local
+                } else {
+                    ConfigBlockSourceKind::Default
+                },
+                workspace_profile: None,
+                mode: None,
+            },
+        },
+        doc_inventory: LoadedDocInventoryConfig {
+            source: root.descriptor.rel_path.clone(),
+            base_dir: root.descriptor.base_dir.clone(),
+            doc_inventory: root.parsed.doc_inventory.clone().unwrap_or_default(),
+            resolution: BlockResolution {
+                origin_kind: if root.parsed.doc_inventory.is_some() {
+                    ConfigBlockSourceKind::Local
+                } else {
+                    ConfigBlockSourceKind::Default
+                },
+                workspace_profile: None,
+                mode: None,
+            },
+        },
+        inheritance: None,
+    })
+}
+
+fn resolve_workspace_child_effective_config(
+    root: &ParsedImpactFile,
+    child: &ParsedImpactFile,
+) -> Result<EffectiveConfig> {
+    if child.parsed.layout != ConfigLayout::Repo {
+        bail!(
+            "{} must use `layout: repo` when loaded from a workspace root",
+            child.descriptor.rel_path
+        );
+    }
+
+    let Some(inherit) = child.parsed.inherit.as_ref() else {
+        if child.parsed.overrides.is_some() {
+            bail!(
+                "{} declares `overrides` without `inherit.workspace_profile`",
+                child.descriptor.rel_path
+            );
+        }
+        return resolve_repo_local_effective_config(child);
+    };
+
+    if !child.parsed.rules.is_empty()
+        || child.parsed.coverage.is_some()
+        || child.parsed.freshness.is_some()
+        || child.parsed.doc_inventory.is_some()
+    {
+        bail!(
+            "{} uses workspace inheritance and therefore must place all runtime changes under `overrides` instead of top-level `rules`, `coverage`, `freshness`, or `docInventory`",
+            child.descriptor.rel_path
+        );
+    }
+
+    let workspace = root.parsed.workspace.as_ref().ok_or_else(|| {
+        miette!(
+            "{} is a workspace config but does not define a `workspace` block",
+            root.descriptor.rel_path
+        )
+    })?;
+    let profile = workspace
+        .profiles
+        .get(&inherit.workspace_profile)
+        .ok_or_else(|| {
+            miette!(
+                "{} references missing workspace profile `{}` from {}",
+                child.descriptor.rel_path,
+                inherit.workspace_profile,
+                root.descriptor.rel_path
+            )
+        })?;
+
+    let overrides = child.parsed.overrides.clone().unwrap_or_default();
+    let resolved_rules = resolve_inherited_rules(
+        root,
+        child,
+        &inherit.workspace_profile,
+        profile,
+        &overrides.rules,
+    )?;
+    let (coverage, coverage_resolution) = resolve_scoped_patterns(
+        profile.coverage.as_ref(),
+        overrides.coverage.as_ref(),
+        &inherit.workspace_profile,
+    );
+    let (doc_inventory, doc_inventory_resolution) = resolve_doc_inventory(
+        profile.doc_inventory.as_ref(),
+        overrides.doc_inventory.as_ref(),
+        &inherit.workspace_profile,
+    );
+    let (freshness, freshness_resolution) = resolve_freshness(
+        profile.freshness.as_ref(),
+        overrides.freshness.as_ref(),
+        &inherit.workspace_profile,
+    )?;
+
+    Ok(EffectiveConfig {
+        source: child.descriptor.rel_path.clone(),
+        base_dir: child.descriptor.base_dir.clone(),
+        rules: resolved_rules,
+        coverage: LoadedCoverageConfig {
+            source: child.descriptor.rel_path.clone(),
+            base_dir: child.descriptor.base_dir.clone(),
+            coverage,
+            resolution: coverage_resolution,
+        },
+        freshness: LoadedFreshnessConfig {
+            source: child.descriptor.rel_path.clone(),
+            base_dir: child.descriptor.base_dir.clone(),
+            freshness,
+            resolution: freshness_resolution,
+        },
+        doc_inventory: LoadedDocInventoryConfig {
+            source: child.descriptor.rel_path.clone(),
+            base_dir: child.descriptor.base_dir.clone(),
+            doc_inventory,
+            resolution: doc_inventory_resolution,
+        },
+        inheritance: Some(InheritanceResolution {
+            workspace_profile: inherit.workspace_profile.clone(),
+            add_count: overrides.rules.add.len(),
+            replace_count: overrides.rules.replace.len(),
+            disable_count: overrides.rules.disable.len(),
+            disabled_rule_ids: overrides
+                .rules
+                .disable
+                .iter()
+                .map(|rule| rule.id.clone())
+                .collect(),
+            coverage_mode: overrides
+                .coverage
+                .as_ref()
+                .map(|override_block| override_block.mode.as_str().to_string()),
+            doc_inventory_mode: overrides
+                .doc_inventory
+                .as_ref()
+                .map(|override_block| override_block.mode.as_str().to_string()),
+            freshness_mode: overrides
+                .freshness
+                .as_ref()
+                .map(|override_block| override_block.mode.as_str().to_string()),
+        }),
+    })
+}
+
+fn resolve_inherited_rules(
+    root: &ParsedImpactFile,
+    child: &ParsedImpactFile,
+    profile_name: &str,
+    profile: &WorkspaceProfile,
+    overrides: &RuleOverrides,
+) -> Result<Vec<LoadedRule>> {
+    let mut ordered = Vec::<(String, LoadedRule)>::new();
+
+    for rule in &profile.rules {
+        let source =
+            workspace_profile_rule_source(&root.descriptor.rel_path, profile_name, &rule.id);
+        ordered.push((
+            rule.id.clone(),
+            LoadedRule {
+                source,
+                config_source: child.descriptor.rel_path.clone(),
+                base_dir: child.descriptor.base_dir.clone(),
+                provenance: RuleProvenance {
+                    config_source: root.descriptor.rel_path.clone(),
+                    origin_kind: RuleOriginKind::WorkspaceProfile,
+                    workspace_profile: Some(profile_name.to_string()),
+                },
+                rule: rule.clone(),
+            },
+        ));
+    }
+
+    for rule in &overrides.replace {
+        let source = override_rule_source(&child.descriptor.rel_path, "replace", &rule.id);
+        let Some(position) = ordered.iter().position(|(id, _)| id == &rule.id) else {
+            bail!(
+                "{} tries to replace inherited rule `{}` but that rule does not exist in workspace profile `{}`",
+                child.descriptor.rel_path,
+                rule.id,
+                profile_name
+            );
+        };
+        ordered[position] = (
+            rule.id.clone(),
+            LoadedRule {
+                source,
+                config_source: child.descriptor.rel_path.clone(),
+                base_dir: child.descriptor.base_dir.clone(),
+                provenance: RuleProvenance {
+                    config_source: child.descriptor.rel_path.clone(),
+                    origin_kind: RuleOriginKind::OverrideReplace,
+                    workspace_profile: Some(profile_name.to_string()),
+                },
+                rule: rule.clone(),
+            },
+        );
+    }
+
+    let profile_rule_ids = profile
+        .rules
+        .iter()
+        .map(|rule| rule.id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for disabled in &overrides.disable {
+        if !profile_rule_ids.contains(disabled.id.as_str()) {
+            bail!(
+                "{} tries to disable `{}` but that rule is not inherited from workspace profile `{}`",
+                child.descriptor.rel_path,
+                disabled.id,
+                profile_name
+            );
+        }
+        let Some(position) = ordered.iter().position(|(id, _)| id == &disabled.id) else {
+            bail!(
+                "{} tries to disable `{}` but that rule is not active after replacements",
+                child.descriptor.rel_path,
+                disabled.id
+            );
+        };
+        ordered.remove(position);
+    }
+
+    for rule in &overrides.add {
+        if ordered.iter().any(|(id, _)| id == &rule.id) {
+            bail!(
+                "{} tries to add rule `{}` but that id is already active in inherited config",
+                child.descriptor.rel_path,
+                rule.id
+            );
+        }
+        let source = override_rule_source(&child.descriptor.rel_path, "add", &rule.id);
+        ordered.push((
+            rule.id.clone(),
+            LoadedRule {
+                source,
+                config_source: child.descriptor.rel_path.clone(),
+                base_dir: child.descriptor.base_dir.clone(),
+                provenance: RuleProvenance {
+                    config_source: child.descriptor.rel_path.clone(),
+                    origin_kind: RuleOriginKind::OverrideAdd,
+                    workspace_profile: Some(profile_name.to_string()),
+                },
+                rule: rule.clone(),
+            },
+        ));
+    }
+
+    Ok(ordered.into_iter().map(|(_, loaded)| loaded).collect())
+}
+
+fn resolve_scoped_patterns(
+    inherited: Option<&CoverageConfig>,
+    override_block: Option<&ScopedPatternOverride>,
+    profile_name: &str,
+) -> (CoverageConfig, BlockResolution) {
+    match override_block {
+        Some(override_block) if override_block.mode == OverrideMode::Replace => (
+            CoverageConfig {
+                include: sorted_unique_patterns(&override_block.include),
+                exclude: sorted_unique_patterns(&override_block.exclude),
+            },
+            BlockResolution {
+                origin_kind: ConfigBlockSourceKind::OverrideReplace,
+                workspace_profile: Some(profile_name.to_string()),
+                mode: Some(override_block.mode.as_str().to_string()),
+            },
+        ),
+        Some(override_block) => {
+            let base = inherited.cloned().unwrap_or_default();
+            (
+                CoverageConfig {
+                    include: merge_patterns(&base.include, &override_block.include),
+                    exclude: merge_patterns(&base.exclude, &override_block.exclude),
+                },
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::OverrideMerge,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: Some(override_block.mode.as_str().to_string()),
+                },
+            )
+        }
+        None => match inherited {
+            Some(inherited) => (
+                inherited.clone(),
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::WorkspaceProfile,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: None,
+                },
+            ),
+            None => (
+                CoverageConfig::default(),
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::Default,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: None,
+                },
+            ),
+        },
+    }
+}
+
+fn resolve_doc_inventory(
+    inherited: Option<&DocInventoryConfig>,
+    override_block: Option<&ScopedPatternOverride>,
+    profile_name: &str,
+) -> (DocInventoryConfig, BlockResolution) {
+    match override_block {
+        Some(override_block) if override_block.mode == OverrideMode::Replace => (
+            DocInventoryConfig {
+                include: sorted_unique_patterns(&override_block.include),
+                exclude: sorted_unique_patterns(&override_block.exclude),
+            },
+            BlockResolution {
+                origin_kind: ConfigBlockSourceKind::OverrideReplace,
+                workspace_profile: Some(profile_name.to_string()),
+                mode: Some(override_block.mode.as_str().to_string()),
+            },
+        ),
+        Some(override_block) => {
+            let base = inherited.cloned().unwrap_or_default();
+            (
+                DocInventoryConfig {
+                    include: merge_patterns(&base.include, &override_block.include),
+                    exclude: merge_patterns(&base.exclude, &override_block.exclude),
+                },
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::OverrideMerge,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: Some(override_block.mode.as_str().to_string()),
+                },
+            )
+        }
+        None => match inherited {
+            Some(inherited) => (
+                inherited.clone(),
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::WorkspaceProfile,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: None,
+                },
+            ),
+            None => (
+                DocInventoryConfig::default(),
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::Default,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: None,
+                },
+            ),
+        },
+    }
+}
+
+fn resolve_freshness(
+    inherited: Option<&FreshnessConfig>,
+    override_block: Option<&FreshnessOverride>,
+    profile_name: &str,
+) -> Result<(FreshnessConfig, BlockResolution)> {
+    match override_block {
+        Some(override_block) if override_block.mode != OverrideMode::Replace => bail!(
+            "freshness overrides only support `mode: replace` in the first inheritance release"
+        ),
+        Some(override_block) => Ok((
+            FreshnessConfig {
+                warn_after_commits: override_block.warn_after_commits,
+                warn_after_days: override_block.warn_after_days,
+                critical_after_days: override_block.critical_after_days,
+            },
+            BlockResolution {
+                origin_kind: ConfigBlockSourceKind::OverrideReplace,
+                workspace_profile: Some(profile_name.to_string()),
+                mode: Some(override_block.mode.as_str().to_string()),
+            },
+        )),
+        None => match inherited {
+            Some(inherited) => Ok((
+                inherited.clone(),
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::WorkspaceProfile,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: None,
+                },
+            )),
+            None => Ok((
+                FreshnessConfig::default(),
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::Default,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: None,
+                },
+            )),
+        },
+    }
+}
+
+fn sorted_unique_patterns(patterns: &[String]) -> Vec<String> {
+    patterns
+        .iter()
+        .map(|pattern| normalize_path(pattern))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn merge_patterns(left: &[String], right: &[String]) -> Vec<String> {
+    left.iter()
+        .chain(right.iter())
+        .map(|pattern| normalize_path(pattern))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn workspace_profile_rule_source(root_source: &str, profile_name: &str, rule_id: &str) -> String {
+    format!("{root_source}#workspace.profiles.{profile_name}.rules.{rule_id}")
+}
+
+fn override_rule_source(config_source: &str, operation: &str, rule_id: &str) -> String {
+    format!("{config_source}#overrides.rules.{operation}.{rule_id}")
 }
 
 pub fn validate_loaded_rules(loaded_rules: &[LoadedRule]) -> Vec<ConfigValidationProblem> {
@@ -549,6 +1315,390 @@ pub fn validate_loaded_doc_inventory_configs(
     problems
 }
 
+fn validate_parsed_configs(parsed_files: &[ParsedImpactFile]) -> Vec<ConfigValidationProblem> {
+    let mut problems = Vec::new();
+
+    let root_workspace_profiles = parsed_files
+        .first()
+        .and_then(|parsed| match parsed.parsed.layout {
+            ConfigLayout::Workspace => parsed.parsed.workspace.as_ref(),
+            ConfigLayout::Repo => None,
+        })
+        .map(|workspace| workspace.profiles.clone())
+        .unwrap_or_default();
+
+    for parsed in parsed_files {
+        validate_top_level_blocks(parsed, &mut problems);
+        match parsed.parsed.layout {
+            ConfigLayout::Workspace => {
+                validate_workspace_config(parsed, &mut problems);
+            }
+            ConfigLayout::Repo => {
+                validate_repo_config(parsed, &root_workspace_profiles, &mut problems);
+            }
+        }
+    }
+
+    problems.sort_by(|left, right| {
+        (&left.source, &left.rule_id, &left.message).cmp(&(
+            &right.source,
+            &right.rule_id,
+            &right.message,
+        ))
+    });
+    problems
+}
+
+fn validate_top_level_blocks(
+    parsed: &ParsedImpactFile,
+    problems: &mut Vec<ConfigValidationProblem>,
+) {
+    if let Some(coverage) = parsed.parsed.coverage.as_ref() {
+        validate_scoped_patterns(
+            &parsed.descriptor.rel_path,
+            "coverage",
+            &coverage.include,
+            &coverage.exclude,
+            problems,
+        );
+    }
+
+    if let Some(doc_inventory) = parsed.parsed.doc_inventory.as_ref() {
+        validate_scoped_patterns(
+            &parsed.descriptor.rel_path,
+            "docInventory",
+            &doc_inventory.include,
+            &doc_inventory.exclude,
+            problems,
+        );
+    }
+
+    if let Some(freshness) = parsed.parsed.freshness.as_ref() {
+        validate_freshness_block(&parsed.descriptor.rel_path, freshness, problems);
+    }
+
+    for rule in &parsed.parsed.rules {
+        validate_single_rule(
+            rule,
+            &parsed.descriptor.rel_path,
+            &parsed.descriptor.base_dir,
+            problems,
+        );
+    }
+}
+
+fn validate_workspace_config(
+    parsed: &ParsedImpactFile,
+    problems: &mut Vec<ConfigValidationProblem>,
+) {
+    if parsed.parsed.inherit.is_some() {
+        problems.push(ConfigValidationProblem {
+            source: parsed.descriptor.rel_path.clone(),
+            rule_id: None,
+            message: "workspace root configs must not declare `inherit`".into(),
+        });
+    }
+    if parsed.parsed.overrides.is_some() {
+        problems.push(ConfigValidationProblem {
+            source: parsed.descriptor.rel_path.clone(),
+            rule_id: None,
+            message: "workspace root configs must not declare `overrides`".into(),
+        });
+    }
+
+    if let Some(workspace) = parsed.parsed.workspace.as_ref() {
+        for (profile_name, profile) in &workspace.profiles {
+            let profile_source = format!(
+                "{}#workspace.profiles.{profile_name}",
+                parsed.descriptor.rel_path
+            );
+            if let Some(coverage) = profile.coverage.as_ref() {
+                validate_scoped_patterns(
+                    &profile_source,
+                    "coverage",
+                    &coverage.include,
+                    &coverage.exclude,
+                    problems,
+                );
+            }
+            if let Some(doc_inventory) = profile.doc_inventory.as_ref() {
+                validate_scoped_patterns(
+                    &profile_source,
+                    "docInventory",
+                    &doc_inventory.include,
+                    &doc_inventory.exclude,
+                    problems,
+                );
+            }
+            if let Some(freshness) = profile.freshness.as_ref() {
+                validate_freshness_block(&profile_source, freshness, problems);
+            }
+            for rule in &profile.rules {
+                validate_single_rule(rule, &profile_source, &parsed.descriptor.base_dir, problems);
+            }
+        }
+    }
+}
+
+fn validate_repo_config(
+    parsed: &ParsedImpactFile,
+    root_workspace_profiles: &BTreeMap<String, WorkspaceProfile>,
+    problems: &mut Vec<ConfigValidationProblem>,
+) {
+    let Some(inherit) = parsed.parsed.inherit.as_ref() else {
+        if parsed.parsed.overrides.is_some() {
+            problems.push(ConfigValidationProblem {
+                source: parsed.descriptor.rel_path.clone(),
+                rule_id: None,
+                message: "`overrides` requires `inherit.workspace_profile`".into(),
+            });
+        }
+        return;
+    };
+
+    if parsed.parsed.coverage.is_some() {
+        problems.push(ConfigValidationProblem {
+            source: parsed.descriptor.rel_path.clone(),
+            rule_id: None,
+            message: "configs using workspace inheritance must not define top-level `coverage`; move it into `overrides.coverage`".into(),
+        });
+    }
+    if parsed.parsed.doc_inventory.is_some() {
+        problems.push(ConfigValidationProblem {
+            source: parsed.descriptor.rel_path.clone(),
+            rule_id: None,
+            message: "configs using workspace inheritance must not define top-level `docInventory`; move it into `overrides.docInventory`".into(),
+        });
+    }
+    if parsed.parsed.freshness.is_some() {
+        problems.push(ConfigValidationProblem {
+            source: parsed.descriptor.rel_path.clone(),
+            rule_id: None,
+            message: "configs using workspace inheritance must not define top-level `freshness`; move it into `overrides.freshness`".into(),
+        });
+    }
+    if !parsed.parsed.rules.is_empty() {
+        problems.push(ConfigValidationProblem {
+            source: parsed.descriptor.rel_path.clone(),
+            rule_id: None,
+            message: "configs using workspace inheritance must not define top-level `rules`; use `overrides.rules`".into(),
+        });
+    }
+
+    let Some(profile) = root_workspace_profiles.get(&inherit.workspace_profile) else {
+        problems.push(ConfigValidationProblem {
+            source: parsed.descriptor.rel_path.clone(),
+            rule_id: None,
+            message: format!(
+                "inherit.workspace_profile `{}` does not exist in the active workspace root",
+                inherit.workspace_profile
+            ),
+        });
+        return;
+    };
+
+    let overrides = parsed.parsed.overrides.clone().unwrap_or_default();
+    if let Some(coverage) = overrides.coverage.as_ref() {
+        validate_scoped_patterns(
+            &format!("{}#overrides.coverage", parsed.descriptor.rel_path),
+            "coverage",
+            &coverage.include,
+            &coverage.exclude,
+            problems,
+        );
+    }
+    if let Some(doc_inventory) = overrides.doc_inventory.as_ref() {
+        validate_scoped_patterns(
+            &format!("{}#overrides.docInventory", parsed.descriptor.rel_path),
+            "docInventory",
+            &doc_inventory.include,
+            &doc_inventory.exclude,
+            problems,
+        );
+    }
+    if let Some(freshness) = overrides.freshness.as_ref() {
+        if freshness.mode != OverrideMode::Replace {
+            problems.push(ConfigValidationProblem {
+                source: format!("{}#overrides.freshness", parsed.descriptor.rel_path),
+                rule_id: None,
+                message: "overrides.freshness only supports `mode: replace`".into(),
+            });
+        }
+        validate_freshness_block(
+            &format!("{}#overrides.freshness", parsed.descriptor.rel_path),
+            &FreshnessConfig {
+                warn_after_commits: freshness.warn_after_commits,
+                warn_after_days: freshness.warn_after_days,
+                critical_after_days: freshness.critical_after_days,
+            },
+            problems,
+        );
+    }
+
+    for rule in &overrides.rules.add {
+        validate_single_rule(
+            rule,
+            &format!("{}#overrides.rules.add", parsed.descriptor.rel_path),
+            &parsed.descriptor.base_dir,
+            problems,
+        );
+    }
+    for rule in &overrides.rules.replace {
+        validate_single_rule(
+            rule,
+            &format!("{}#overrides.rules.replace", parsed.descriptor.rel_path),
+            &parsed.descriptor.base_dir,
+            problems,
+        );
+    }
+
+    let profile_rule_ids = profile
+        .rules
+        .iter()
+        .map(|rule| rule.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let replace_ids = overrides
+        .rules
+        .replace
+        .iter()
+        .map(|rule| rule.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let add_ids = overrides
+        .rules
+        .add
+        .iter()
+        .map(|rule| rule.id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for rule in &overrides.rules.replace {
+        if !profile_rule_ids.contains(rule.id.as_str()) {
+            problems.push(ConfigValidationProblem {
+                source: format!("{}#overrides.rules.replace", parsed.descriptor.rel_path),
+                rule_id: Some(rule.id.clone()),
+                message: format!(
+                    "override replace rule `{}` does not match any inherited rule in workspace profile `{}`",
+                    rule.id, inherit.workspace_profile
+                ),
+            });
+        }
+    }
+
+    for disabled in &overrides.rules.disable {
+        if !profile_rule_ids.contains(disabled.id.as_str()) {
+            problems.push(ConfigValidationProblem {
+                source: format!("{}#overrides.rules.disable", parsed.descriptor.rel_path),
+                rule_id: Some(disabled.id.clone()),
+                message: format!(
+                    "override disable rule `{}` does not match any inherited rule in workspace profile `{}`",
+                    disabled.id, inherit.workspace_profile
+                ),
+            });
+        }
+        if add_ids.contains(disabled.id.as_str()) && !replace_ids.contains(disabled.id.as_str()) {
+            problems.push(ConfigValidationProblem {
+                source: format!("{}#overrides.rules.disable", parsed.descriptor.rel_path),
+                rule_id: Some(disabled.id.clone()),
+                message: format!(
+                    "override disable rule `{}` targets a locally added rule; only inherited rules may be disabled",
+                    disabled.id
+                ),
+            });
+        }
+        if disabled.reason.trim().is_empty() {
+            problems.push(ConfigValidationProblem {
+                source: format!("{}#overrides.rules.disable", parsed.descriptor.rel_path),
+                rule_id: Some(disabled.id.clone()),
+                message: "override disable entries must include a non-empty reason".into(),
+            });
+        }
+    }
+}
+
+fn validate_scoped_patterns(
+    source: &str,
+    block_name: &str,
+    include: &[String],
+    exclude: &[String],
+    problems: &mut Vec<ConfigValidationProblem>,
+) {
+    for (index, pattern) in include.iter().enumerate() {
+        if let Some(message) = validate_trigger_path(pattern) {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!("{block_name}.include[{index}] {message}"),
+            });
+        }
+    }
+
+    for (index, pattern) in exclude.iter().enumerate() {
+        if let Some(message) = validate_trigger_path(pattern) {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!("{block_name}.exclude[{index}] {message}"),
+            });
+        }
+    }
+}
+
+fn validate_freshness_block(
+    source: &str,
+    freshness: &FreshnessConfig,
+    problems: &mut Vec<ConfigValidationProblem>,
+) {
+    if freshness.warn_after_commits == 0 {
+        problems.push(ConfigValidationProblem {
+            source: source.into(),
+            rule_id: None,
+            message: "freshness.warn_after_commits must be greater than 0".into(),
+        });
+    }
+    if freshness.warn_after_days == 0 {
+        problems.push(ConfigValidationProblem {
+            source: source.into(),
+            rule_id: None,
+            message: "freshness.warn_after_days must be greater than 0".into(),
+        });
+    }
+    if freshness.critical_after_days == 0 {
+        problems.push(ConfigValidationProblem {
+            source: source.into(),
+            rule_id: None,
+            message: "freshness.critical_after_days must be greater than 0".into(),
+        });
+    }
+    if freshness.critical_after_days < freshness.warn_after_days {
+        problems.push(ConfigValidationProblem {
+            source: source.into(),
+            rule_id: None,
+            message:
+                "freshness.critical_after_days must be greater than or equal to freshness.warn_after_days"
+                    .into(),
+        });
+    }
+}
+
+fn validate_single_rule(
+    rule: &Rule,
+    source: &str,
+    base_dir: &str,
+    problems: &mut Vec<ConfigValidationProblem>,
+) {
+    let loaded = LoadedRule {
+        source: source.into(),
+        config_source: source.into(),
+        base_dir: base_dir.into(),
+        provenance: RuleProvenance {
+            config_source: source.into(),
+            origin_kind: RuleOriginKind::RepoLocal,
+            workspace_profile: None,
+        },
+        rule: rule.clone(),
+    };
+    validate_rule(&loaded, problems);
+}
+
 fn validate_rule(loaded: &LoadedRule, problems: &mut Vec<ConfigValidationProblem>) {
     let rule = &loaded.rule;
     let rule_id = if rule.id.trim().is_empty() {
@@ -715,12 +1865,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        CONFIG_FILE, CoverageConfig, DOC_ROOT_DIR, DocInventoryConfig, FreshnessConfig,
-        ImpactLayout, LoadedCoverageConfig, LoadedDocInventoryConfig, LoadedFreshnessConfig,
-        LoadedRule, RequiredDoc, Rule, Trigger, detect_impact_layout, load_coverage_configs,
-        load_doc_inventory_configs, load_freshness_configs, load_impact_files, normalize_path,
-        resolve_rule_path, validate_loaded_coverage_configs, validate_loaded_doc_inventory_configs,
-        validate_loaded_freshness_configs, validate_loaded_rules,
+        CONFIG_FILE, DOC_ROOT_DIR, ImpactLayout, RuleOriginKind, detect_impact_layout,
+        load_effective_configs, load_impact_files, normalize_path, resolve_rule_path,
+        root_dir_from_option, validate_config_graph, validate_loaded_rules,
     };
 
     fn temp_dir(prefix: &str) -> PathBuf {
@@ -773,61 +1920,327 @@ mod tests {
     }
 
     #[test]
-    fn load_impact_files_resolves_repo_local_paths() {
-        let root = temp_dir("docpact-load");
+    fn workspace_inheritance_builds_effective_child_config() {
+        let root = temp_dir("docpact-config-inherit");
         fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("root doc dir");
-        fs::create_dir_all(root.join(format!("subrepo/{DOC_ROOT_DIR}"))).expect("subrepo doc dir");
+        fs::create_dir_all(root.join(format!("sample-sdk/{DOC_ROOT_DIR}")))
+            .expect("subrepo doc dir");
 
         fs::write(
             root.join(CONFIG_FILE),
             r#"
 version: 1
 layout: workspace
-lastReviewedAt: "2026-04-18"
-lastReviewedCommit: "abc"
 workspace:
   name: demo
+  profiles:
+    default:
+      coverage:
+        include:
+          - src/**
+      docInventory:
+        include:
+          - docs/**
+      freshness:
+        warn_after_commits: 10
+        warn_after_days: 20
+        critical_after_days: 30
+      rules:
+        - id: inherited-rule
+          scope: workspace
+          repo: workspace
+          triggers:
+            - path: src/**
+              kind: code
+          requiredDocs:
+            - path: docs/guide.md
+              mode: review_or_update
+          reason: inherited
 rules:
-  - id: root-rule
+  - id: root-only
     scope: workspace
     repo: workspace
     triggers:
       - path: AGENTS.md
-        kind: doc-contract
+        kind: doc
     requiredDocs:
       - path: .docpact/config.yaml
-        mode: review_or_update
     reason: root
 "#,
         )
         .expect("root config");
 
         fs::write(
+            root.join(format!("sample-sdk/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+inherit:
+  workspace_profile: default
+overrides:
+  rules:
+    add:
+      - id: local-extra
+        scope: repo
+        repo: sample-sdk
+        triggers:
+          - path: src/payments/**
+            kind: code
+        requiredDocs:
+          - path: docs/payments.md
+        reason: local
+    replace:
+      - id: inherited-rule
+        scope: repo
+        repo: sample-sdk
+        triggers:
+          - path: src/app/**
+            kind: code
+        requiredDocs:
+          - path: docs/app.md
+        reason: replaced
+  coverage:
+    mode: merge
+    include:
+      - tests/**
+    exclude:
+      - dist/**
+  docInventory:
+    mode: replace
+    include:
+      - README.md
+  freshness:
+    mode: replace
+    warn_after_commits: 21
+    warn_after_days: 34
+    critical_after_days: 55
+"#,
+        )
+        .expect("child config");
+
+        let effective = load_effective_configs(&root, None).expect("effective configs");
+        assert_eq!(effective.len(), 2);
+
+        let child = effective
+            .iter()
+            .find(|entry| entry.base_dir == "sample-sdk")
+            .expect("child config should exist");
+        assert_eq!(
+            child
+                .inheritance
+                .as_ref()
+                .expect("inheritance should exist")
+                .workspace_profile,
+            "default"
+        );
+        assert_eq!(child.coverage.coverage.include, vec!["src/**", "tests/**"]);
+        assert_eq!(child.coverage.coverage.exclude, vec!["dist/**"]);
+        assert_eq!(child.doc_inventory.doc_inventory.include, vec!["README.md"]);
+        assert_eq!(child.freshness.freshness.warn_after_commits, 21);
+        assert_eq!(child.rules.len(), 2);
+        assert_eq!(child.rules[0].rule.id, "inherited-rule");
+        assert_eq!(
+            child.rules[0].provenance.origin_kind,
+            RuleOriginKind::OverrideReplace
+        );
+        assert_eq!(child.rules[1].rule.id, "local-extra");
+        assert_eq!(
+            child.rules[1].provenance.origin_kind,
+            RuleOriginKind::OverrideAdd
+        );
+        assert_eq!(
+            child.rules[0].config_source,
+            "sample-sdk/.docpact/config.yaml"
+        );
+        assert_eq!(child.rules[0].base_dir, "sample-sdk");
+    }
+
+    #[test]
+    fn workspace_child_without_inherit_remains_local_repo_config() {
+        let root = temp_dir("docpact-config-local-child");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("root doc dir");
+        fs::create_dir_all(root.join(format!("sample-sdk/{DOC_ROOT_DIR}")))
+            .expect("subrepo doc dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+workspace:
+  name: demo
+rules: []
+"#,
+        )
+        .expect("root config");
+
+        fs::write(
+            root.join(format!("sample-sdk/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+coverage:
+  include:
+    - src/**
+rules:
+  - id: repo-rule
+    scope: repo
+    repo: sample-sdk
+    triggers:
+      - path: src/**
+        kind: code
+    requiredDocs:
+      - path: docs/guide.md
+    reason: local
+"#,
+        )
+        .expect("child config");
+
+        let effective = load_effective_configs(&root, None).expect("effective configs");
+        let child = effective
+            .iter()
+            .find(|entry| entry.base_dir == "sample-sdk")
+            .expect("child config should exist");
+
+        assert!(child.inheritance.is_none());
+        assert_eq!(child.coverage.coverage.include, vec!["src/**"]);
+        assert_eq!(child.rules[0].source, "sample-sdk/.docpact/config.yaml");
+        assert_eq!(
+            child.rules[0].provenance.origin_kind,
+            RuleOriginKind::RepoLocal
+        );
+    }
+
+    #[test]
+    fn strict_validation_reports_invalid_inheritance_shapes() {
+        let root = temp_dir("docpact-config-invalid-inherit");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("root doc dir");
+        fs::create_dir_all(root.join(format!("sample-sdk/{DOC_ROOT_DIR}")))
+            .expect("subrepo doc dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+workspace:
+  name: demo
+  profiles:
+    default:
+      rules:
+        - id: inherited-rule
+          scope: workspace
+          repo: workspace
+          triggers:
+            - path: src/**
+              kind: code
+          requiredDocs:
+            - path: docs/guide.md
+          reason: inherited
+rules: []
+"#,
+        )
+        .expect("root config");
+
+        fs::write(
+            root.join(format!("sample-sdk/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+inherit:
+  workspace_profile: default
+coverage:
+  include:
+    - src/**
+rules:
+  - id: illegal-local
+    scope: repo
+    repo: sample-sdk
+    triggers:
+      - path: src/**
+        kind: code
+    requiredDocs:
+      - path: docs/guide.md
+    reason: local
+overrides:
+  freshness:
+    mode: merge
+"#,
+        )
+        .expect("child config");
+
+        let problems = validate_config_graph(&root, None).expect("validation should work");
+        let messages = problems
+            .iter()
+            .map(|problem| format!("{}: {}", problem.source, problem.message))
+            .collect::<Vec<_>>();
+
+        assert!(messages.iter().any(|message| {
+            message
+                .contains("must not define top-level `coverage`; move it into `overrides.coverage`")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains("must not define top-level `rules`; use `overrides.rules`")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains("overrides.freshness only supports `mode: replace`")
+        }));
+    }
+
+    #[test]
+    fn duplicate_effective_rule_ids_still_report_in_strict_validation() {
+        let root = temp_dir("docpact-validate-duplicate-effective");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root dir");
+        fs::create_dir_all(root.join(format!("subrepo/{DOC_ROOT_DIR}"))).expect("subrepo dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+rules:
+  - id: duplicate-rule
+    scope: workspace
+    repo: workspace
+    triggers:
+      - path: AGENTS.md
+        kind: doc
+    requiredDocs:
+      - path: .docpact/config.yaml
+    reason: root
+"#,
+        )
+        .expect("root config");
+        fs::write(
             root.join(format!("subrepo/{CONFIG_FILE}")),
             r#"
 version: 1
 layout: repo
-lastReviewedAt: "2026-04-18"
-lastReviewedCommit: "abc"
-repo:
-  id: subrepo
 rules:
-  - id: repo-rule
+  - id: duplicate-rule
     scope: repo
     repo: subrepo
     triggers:
       - path: src/**
         kind: code
     requiredDocs:
-      - path: .docpact/config.yaml
-        mode: review_or_update
+      - path: docs/guide.md
     reason: repo
 "#,
         )
         .expect("subrepo config");
 
-        let loaded = load_impact_files(&root, None).expect("impact files should load");
-        assert_eq!(loaded.len(), 2);
+        let loaded = load_impact_files(&root, None).expect("rules should load");
+        let problems = validate_loaded_rules(&loaded);
+        assert!(problems.iter().any(|problem| {
+            problem
+                .message
+                .contains("duplicate rule id `duplicate-rule`")
+        }));
+    }
+
+    #[test]
+    fn resolve_rule_path_uses_base_dir() {
         assert_eq!(
             resolve_rule_path("subrepo", ".docpact/config.yaml"),
             "subrepo/.docpact/config.yaml"
@@ -835,304 +2248,9 @@ rules:
     }
 
     #[test]
-    fn strict_validation_reports_duplicate_ids_and_invalid_rule_shapes() {
-        let loaded = vec![
-            LoadedRule {
-                source: ".docpact/config.yaml".into(),
-                base_dir: String::new(),
-                rule: Rule {
-                    id: "duplicate-rule".into(),
-                    scope: "repo".into(),
-                    repo: "example".into(),
-                    triggers: vec![Trigger {
-                        path: "src/***".into(),
-                        kind: Some("code".into()),
-                    }],
-                    required_docs: vec![RequiredDoc {
-                        path: "docs/*.md".into(),
-                        mode: Some("not-a-real-mode".into()),
-                    }],
-                    reason: "example".into(),
-                },
-            },
-            LoadedRule {
-                source: "child/.docpact/config.yaml".into(),
-                base_dir: "child".into(),
-                rule: Rule {
-                    id: "duplicate-rule".into(),
-                    scope: "repo".into(),
-                    repo: "child".into(),
-                    triggers: Vec::new(),
-                    required_docs: Vec::new(),
-                    reason: "child".into(),
-                },
-            },
-        ];
-
-        let problems = validate_loaded_rules(&loaded);
-        let messages = problems
-            .iter()
-            .map(|problem| format!("{}: {}", problem.source, problem.message))
-            .collect::<Vec<_>>();
-
-        assert!(
-            messages
-                .iter()
-                .any(|message| message.contains("duplicate rule id `duplicate-rule`"))
-        );
-        assert!(messages.iter().any(|message| {
-            message.contains("triggers[0].path contains malformed glob segment `***`")
-        }));
-        assert!(messages.iter().any(|message| {
-            message.contains("requiredDocs[0].path must be an exact document path")
-        }));
-        assert!(
-            messages.iter().any(
-                |message| message.contains("requiredDocs[0].mode `not-a-real-mode` is invalid")
-            )
-        );
-        assert!(
-            messages
-                .iter()
-                .any(|message| message.contains("rule must define at least one trigger"))
-        );
-        assert!(
-            messages
-                .iter()
-                .any(|message| message.contains("rule must define at least one required doc"))
-        );
-    }
-
-    #[test]
-    fn load_coverage_configs_resolves_workspace_entries() {
-        let root = temp_dir("docpact-load-coverage");
-        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("root doc dir");
-        fs::create_dir_all(root.join(format!("subrepo/{DOC_ROOT_DIR}"))).expect("subrepo doc dir");
-
-        fs::write(
-            root.join(CONFIG_FILE),
-            r#"
-version: 1
-layout: workspace
-lastReviewedAt: "2026-04-18"
-lastReviewedCommit: "abc"
-coverage:
-  include:
-    - docs/**
-  exclude:
-    - vendor/**
-workspace:
-  name: demo
-rules: []
-"#,
-        )
-        .expect("root config");
-
-        fs::write(
-            root.join(format!("subrepo/{CONFIG_FILE}")),
-            r#"
-version: 1
-layout: repo
-lastReviewedAt: "2026-04-18"
-lastReviewedCommit: "abc"
-coverage:
-  include:
-    - src/**
-  exclude:
-    - dist/**
-repo:
-  id: subrepo
-rules: []
-"#,
-        )
-        .expect("subrepo config");
-
-        let loaded = load_coverage_configs(&root, None).expect("coverage configs should load");
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].coverage.include, vec!["docs/**".to_string()]);
-        assert_eq!(loaded[1].base_dir, "subrepo");
-        assert_eq!(loaded[1].coverage.exclude, vec!["dist/**".to_string()]);
-    }
-
-    #[test]
-    fn strict_validation_reports_invalid_coverage_patterns() {
-        let loaded = vec![LoadedCoverageConfig {
-            source: ".docpact/config.yaml".into(),
-            base_dir: String::new(),
-            coverage: CoverageConfig {
-                include: vec!["src/***".into()],
-                exclude: vec!["..".into()],
-            },
-        }];
-
-        let problems = validate_loaded_coverage_configs(&loaded);
-        let messages = problems
-            .iter()
-            .map(|problem| problem.message.clone())
-            .collect::<Vec<_>>();
-
-        assert!(
-            messages
-                .iter()
-                .any(|message| message.contains("coverage.include[0] contains malformed glob"))
-        );
-        assert!(
-            messages
-                .iter()
-                .any(|message| message.contains("coverage.exclude[0] must not contain `.` or `..`"))
-        );
-    }
-
-    #[test]
-    fn load_freshness_configs_resolves_workspace_entries() {
-        let root = temp_dir("docpact-load-freshness");
-        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("root doc dir");
-        fs::create_dir_all(root.join(format!("subrepo/{DOC_ROOT_DIR}"))).expect("subrepo doc dir");
-
-        fs::write(
-            root.join(CONFIG_FILE),
-            r#"
-version: 1
-layout: workspace
-lastReviewedAt: "2026-04-18"
-lastReviewedCommit: "abc"
-freshness:
-  warn_after_commits: 21
-  warn_after_days: 34
-  critical_after_days: 55
-rules: []
-"#,
-        )
-        .expect("root config");
-
-        fs::write(
-            root.join(format!("subrepo/{CONFIG_FILE}")),
-            r#"
-version: 1
-layout: repo
-lastReviewedAt: "2026-04-18"
-lastReviewedCommit: "abc"
-freshness:
-  warn_after_commits: 13
-  warn_after_days: 21
-  critical_after_days: 42
-repo:
-  id: subrepo
-rules: []
-"#,
-        )
-        .expect("subrepo config");
-
-        let loaded = load_freshness_configs(&root, None).expect("freshness configs should load");
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].freshness.warn_after_commits, 21);
-        assert_eq!(loaded[1].base_dir, "subrepo");
-        assert_eq!(loaded[1].freshness.critical_after_days, 42);
-    }
-
-    #[test]
-    fn strict_validation_reports_invalid_freshness_thresholds() {
-        let loaded = vec![LoadedFreshnessConfig {
-            source: ".docpact/config.yaml".into(),
-            base_dir: String::new(),
-            freshness: FreshnessConfig {
-                warn_after_commits: 0,
-                warn_after_days: 30,
-                critical_after_days: 20,
-            },
-        }];
-
-        let problems = validate_loaded_freshness_configs(&loaded);
-        let messages = problems
-            .iter()
-            .map(|problem| problem.message.clone())
-            .collect::<Vec<_>>();
-
-        assert!(messages.iter().any(|message| {
-            message.contains("freshness.warn_after_commits must be greater than 0")
-        }));
-        assert!(messages.iter().any(|message| {
-            message.contains(
-                "freshness.critical_after_days must be greater than or equal to freshness.warn_after_days"
-            )
-        }));
-    }
-
-    #[test]
-    fn load_doc_inventory_configs_resolves_workspace_entries() {
-        let root = temp_dir("docpact-load-doc-inventory");
-        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("root doc dir");
-        fs::create_dir_all(root.join(format!("subrepo/{DOC_ROOT_DIR}"))).expect("subrepo doc dir");
-
-        fs::write(
-            root.join(CONFIG_FILE),
-            r#"
-version: 1
-layout: workspace
-lastReviewedAt: "2026-04-18"
-lastReviewedCommit: "abc"
-docInventory:
-  include:
-    - docs/**
-rules: []
-"#,
-        )
-        .expect("root config");
-
-        fs::write(
-            root.join(format!("subrepo/{CONFIG_FILE}")),
-            r#"
-version: 1
-layout: repo
-lastReviewedAt: "2026-04-18"
-lastReviewedCommit: "abc"
-docInventory:
-  include:
-    - README.md
-  exclude:
-    - docs/archive/**
-repo:
-  id: subrepo
-rules: []
-"#,
-        )
-        .expect("subrepo config");
-
-        let loaded =
-            load_doc_inventory_configs(&root, None).expect("doc inventory configs should load");
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].doc_inventory.include, vec!["docs/**".to_string()]);
-        assert_eq!(loaded[1].base_dir, "subrepo");
-        assert_eq!(
-            loaded[1].doc_inventory.exclude,
-            vec!["docs/archive/**".to_string()]
-        );
-    }
-
-    #[test]
-    fn strict_validation_reports_invalid_doc_inventory_patterns() {
-        let loaded = vec![LoadedDocInventoryConfig {
-            source: ".docpact/config.yaml".into(),
-            base_dir: String::new(),
-            doc_inventory: DocInventoryConfig {
-                include: vec!["docs/***".into()],
-                exclude: vec!["../notes/**".into()],
-            },
-        }];
-
-        let problems = validate_loaded_doc_inventory_configs(&loaded);
-        let messages = problems
-            .iter()
-            .map(|problem| problem.message.clone())
-            .collect::<Vec<_>>();
-
-        assert!(
-            messages
-                .iter()
-                .any(|message| message.contains("docInventory.include[0] contains malformed glob"))
-        );
-        assert!(messages.iter().any(|message| {
-            message.contains("docInventory.exclude[0] must not contain `.` or `..`")
-        }));
+    fn root_dir_from_option_preserves_explicit_path() {
+        let root = temp_dir("docpact-config-root-dir");
+        let resolved = root_dir_from_option(Some(root.as_path())).expect("root dir");
+        assert_eq!(resolved, root);
     }
 }
