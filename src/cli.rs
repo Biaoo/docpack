@@ -16,6 +16,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     Lint(LintArgs),
+    Baseline(BaselineArgs),
     ListRules(ListRulesArgs),
     Doctor(DoctorArgs),
     Coverage(CoverageArgs),
@@ -59,7 +60,28 @@ pub struct LintArgs {
     #[arg(long, default_value_t = false)]
     pub fail_on_stale_docs: bool,
     #[arg(long)]
+    pub baseline: Option<PathBuf>,
+    #[arg(long)]
     pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct BaselineArgs {
+    #[command(subcommand)]
+    pub command: BaselineCommands,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum BaselineCommands {
+    Create(BaselineCreateArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct BaselineCreateArgs {
+    #[arg(long)]
+    pub report: PathBuf,
+    #[arg(long)]
+    pub output: PathBuf,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -282,9 +304,9 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Cli, Commands, CoverageOutputFormat, DiagnosticDetail, DiagnosticsCommands,
-        DiagnosticsOutputFormat, DoctorOutputFormat, FreshnessOutputFormat, LintMode,
-        ListRulesOutputFormat, OutputFormat, ReviewCommands, ReviewOutputFormat,
+        BaselineCommands, Cli, Commands, CoverageOutputFormat, DiagnosticDetail,
+        DiagnosticsCommands, DiagnosticsOutputFormat, DoctorOutputFormat, FreshnessOutputFormat,
+        LintMode, ListRulesOutputFormat, OutputFormat, ReviewCommands, ReviewOutputFormat,
     };
 
     #[test]
@@ -308,6 +330,8 @@ mod tests {
             "9",
             "--fail-on-uncovered-change",
             "--fail-on-stale-docs",
+            "--baseline",
+            ".docpact/baseline.json",
             "--output",
             ".docpact/runs/latest.json",
         ])
@@ -324,6 +348,10 @@ mod tests {
                 assert_eq!(args.diagnostics_page_size, 9);
                 assert!(args.fail_on_uncovered_change);
                 assert!(args.fail_on_stale_docs);
+                assert_eq!(
+                    args.baseline.as_deref(),
+                    Some(std::path::Path::new(".docpact/baseline.json"))
+                );
                 assert_eq!(
                     args.output.as_deref(),
                     Some(std::path::Path::new(".docpact/runs/latest.json"))
@@ -360,6 +388,36 @@ mod tests {
                 }
             },
             _ => panic!("expected diagnostics command"),
+        }
+    }
+
+    #[test]
+    fn parses_baseline_create_command() {
+        let cli = Cli::try_parse_from([
+            "docpact",
+            "baseline",
+            "create",
+            "--report",
+            ".docpact/runs/latest.json",
+            "--output",
+            ".docpact/baseline.json",
+        ])
+        .expect("cli should parse");
+
+        match cli.command {
+            Commands::Baseline(args) => match args.command {
+                BaselineCommands::Create(create) => {
+                    assert_eq!(
+                        create.report,
+                        std::path::PathBuf::from(".docpact/runs/latest.json")
+                    );
+                    assert_eq!(
+                        create.output,
+                        std::path::PathBuf::from(".docpact/baseline.json")
+                    );
+                }
+            },
+            _ => panic!("expected baseline command"),
         }
     }
 

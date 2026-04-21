@@ -37,7 +37,7 @@ pub struct FreshnessSummary {
     pub stale_doc_count: usize,
     pub warn_count: usize,
     pub critical_count: usize,
-    pub invalid_baseline_count: usize,
+    pub invalid_review_reference_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub struct FreshnessItem {
     pub associated_changed_paths_count: usize,
     pub staleness_level: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub baseline_problems: Vec<String>,
+    pub review_reference_problems: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -72,7 +72,7 @@ struct GovernedDocContext {
 struct ReviewMetadata {
     last_reviewed_commit: Option<String>,
     last_reviewed_at: Option<String>,
-    baseline_problems: Vec<String>,
+    review_reference_problems: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -273,18 +273,18 @@ fn evaluate_doc(
         .cloned()
         .collect::<Vec<_>>();
     let associated_changed_paths_count = associated_changed_paths.len();
-    let mut baseline_problems = metadata.baseline_problems.clone();
+    let mut review_reference_problems = metadata.review_reference_problems.clone();
 
     let commits_since_review = match metadata.last_reviewed_commit.as_deref() {
         Some(commit) if is_commit_reachable_from_head(root_dir, commit)? => {
             Some(get_unique_commits_since(root_dir, commit, &associated_changed_paths)?.len())
         }
         Some(_) => {
-            baseline_problems.push("invalid-lastReviewedCommit".into());
+            review_reference_problems.push("invalid-lastReviewedCommit".into());
             None
         }
         None => {
-            baseline_problems.push("missing-lastReviewedCommit".into());
+            review_reference_problems.push("missing-lastReviewedCommit".into());
             None
         }
     };
@@ -294,12 +294,12 @@ fn evaluate_doc(
             Ok(days) => Some(days),
             Err(error) => {
                 let _ = error;
-                baseline_problems.push("invalid-lastReviewedAt".into());
+                review_reference_problems.push("invalid-lastReviewedAt".into());
                 None
             }
         },
         None => {
-            baseline_problems.push("missing-lastReviewedAt".into());
+            review_reference_problems.push("missing-lastReviewedAt".into());
             None
         }
     };
@@ -316,7 +316,7 @@ fn evaluate_doc(
         associated_changed_paths,
         associated_changed_paths_count,
         staleness_level: staleness_level.as_str().into(),
-        baseline_problems,
+        review_reference_problems,
     })
 }
 
@@ -342,9 +342,9 @@ fn summarize_items(items: &[FreshnessItem]) -> FreshnessSummary {
         .iter()
         .filter(|item| item.staleness_level == FreshnessLevel::Critical.as_str())
         .count();
-    let invalid_baseline_count = items
+    let invalid_review_reference_count = items
         .iter()
-        .filter(|item| !item.baseline_problems.is_empty())
+        .filter(|item| !item.review_reference_problems.is_empty())
         .count();
     let stale_doc_count = warn_count + critical_count;
     let governed_doc_count = items.len();
@@ -355,7 +355,7 @@ fn summarize_items(items: &[FreshnessItem]) -> FreshnessSummary {
         stale_doc_count,
         warn_count,
         critical_count,
-        invalid_baseline_count,
+        invalid_review_reference_count,
     }
 }
 
@@ -399,7 +399,7 @@ fn read_review_metadata(root_dir: &Path, rel_path: &str) -> Result<ReviewMetadat
         return Ok(ReviewMetadata {
             last_reviewed_commit: None,
             last_reviewed_at: None,
-            baseline_problems: vec!["missing-document".into()],
+            review_reference_problems: vec!["missing-document".into()],
         });
     }
 
@@ -413,7 +413,7 @@ fn read_review_metadata(root_dir: &Path, rel_path: &str) -> Result<ReviewMetadat
             last_reviewed_at: values
                 .get("lastReviewedAt")
                 .map(|value| normalize_scalar_value(value)),
-            baseline_problems: Vec::new(),
+            review_reference_problems: Vec::new(),
         });
     }
 
@@ -425,7 +425,7 @@ fn read_review_metadata(root_dir: &Path, rel_path: &str) -> Result<ReviewMetadat
     Ok(ReviewMetadata {
         last_reviewed_commit: None,
         last_reviewed_at: None,
-        baseline_problems: vec!["unsupported-review-metadata-format".into()],
+        review_reference_problems: vec!["unsupported-review-metadata-format".into()],
     })
 }
 
@@ -434,7 +434,7 @@ fn read_review_metadata_from_yaml(value: &Value) -> ReviewMetadata {
         return ReviewMetadata {
             last_reviewed_commit: None,
             last_reviewed_at: None,
-            baseline_problems: vec!["invalid-yaml-review-metadata".into()],
+            review_reference_problems: vec!["invalid-yaml-review-metadata".into()],
         };
     };
 
@@ -445,7 +445,7 @@ fn read_review_metadata_from_yaml(value: &Value) -> ReviewMetadata {
         last_reviewed_at: mapping
             .get(Value::String("lastReviewedAt".into()))
             .and_then(value_to_string),
-        baseline_problems: Vec::new(),
+        review_reference_problems: Vec::new(),
     }
 }
 
@@ -592,17 +592,17 @@ fn emit_report(report: &FreshnessReport, format: FreshnessOutputFormat) {
 fn emit_text_report(report: &FreshnessReport) {
     println!("Docpact repository freshness audit:");
     println!(
-        "Summary: governed_docs={}, fresh_docs={}, stale_docs={}, warn={}, critical={}, invalid_baselines={}",
+        "Summary: governed_docs={}, fresh_docs={}, stale_docs={}, warn={}, critical={}, invalid_review_references={}",
         report.summary.governed_doc_count,
         report.summary.fresh_doc_count,
         report.summary.stale_doc_count,
         report.summary.warn_count,
         report.summary.critical_count,
-        report.summary.invalid_baseline_count,
+        report.summary.invalid_review_reference_count,
     );
     emit_items("Critical docs", report, FreshnessLevel::Critical);
     emit_items("Warn docs", report, FreshnessLevel::Warn);
-    emit_invalid_baselines(report);
+    emit_invalid_review_references(report);
 }
 
 fn emit_items(label: &str, report: &FreshnessReport, level: FreshnessLevel) {
@@ -633,12 +633,12 @@ fn emit_items(label: &str, report: &FreshnessReport, level: FreshnessLevel) {
     }
 }
 
-fn emit_invalid_baselines(report: &FreshnessReport) {
-    println!("Invalid baselines:");
+fn emit_invalid_review_references(report: &FreshnessReport) {
+    println!("Invalid review references:");
     let items = report
         .items
         .iter()
-        .filter(|item| !item.baseline_problems.is_empty())
+        .filter(|item| !item.review_reference_problems.is_empty())
         .collect::<Vec<_>>();
 
     if items.is_empty() {
@@ -650,7 +650,7 @@ fn emit_invalid_baselines(report: &FreshnessReport) {
         println!(
             "- path={} problems={}",
             item.path,
-            item.baseline_problems.join(",")
+            item.review_reference_problems.join(",")
         );
     }
 }
@@ -718,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn freshness_report_surfaces_warn_critical_and_invalid_baselines() {
+    fn freshness_report_surfaces_warn_critical_and_invalid_review_references() {
         let root = temp_dir("docpact-freshness-repo");
         init_git_repo(&root);
         fs::create_dir_all(root.join(".docpact")).expect("doc dir");
@@ -790,7 +790,7 @@ rules:
         )
         .expect("legacy doc updated");
         git(&root, &["add", "docs/api.md", "docs/legacy.md"]);
-        git(&root, &["commit", "-m", "record review baseline"]);
+        git(&root, &["commit", "-m", "record review reference"]);
 
         fs::write(root.join("src/api/client.ts"), "export const api = 2;\n").expect("src update");
         git(&root, &["add", "src/api/client.ts"]);
@@ -802,7 +802,7 @@ rules:
         assert_eq!(report.summary.governed_doc_count, 3);
         assert_eq!(report.summary.warn_count, 1);
         assert_eq!(report.summary.critical_count, 1);
-        assert_eq!(report.summary.invalid_baseline_count, 1);
+        assert_eq!(report.summary.invalid_review_reference_count, 1);
 
         let api = report
             .items
@@ -829,12 +829,12 @@ rules:
         assert_eq!(broken.staleness_level, FreshnessLevel::Ok.as_str());
         assert!(
             broken
-                .baseline_problems
+                .review_reference_problems
                 .contains(&"invalid-lastReviewedCommit".to_string())
         );
         assert!(
             broken
-                .baseline_problems
+                .review_reference_problems
                 .contains(&"invalid-lastReviewedAt".to_string())
         );
     }
@@ -901,9 +901,9 @@ rules:
                 "---\nlastReviewedAt: 2026-04-20\nlastReviewedCommit: {base_commit}\n---\n# API\n"
             ),
         )
-        .expect("doc baseline");
+        .expect("doc review reference");
         git(&root, &["add", "subrepo/docs/api.md"]);
-        git(&root, &["commit", "-m", "record baseline"]);
+        git(&root, &["commit", "-m", "record review reference"]);
         fs::write(
             root.join("subrepo/src/api/client.ts"),
             "export const api = 2;\n",

@@ -17,6 +17,14 @@ fn default_freshness_status() -> String {
     "ok".into()
 }
 
+fn default_baseline_status() -> String {
+    "not-applied".into()
+}
+
+fn default_baseline_state() -> String {
+    "active".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Problem {
     #[serde(rename = "type")]
@@ -50,6 +58,10 @@ pub struct DiagnosticsArtifact {
     pub freshness_status: String,
     #[serde(default)]
     pub freshness_summary: FreshnessSummary,
+    #[serde(default = "default_baseline_status")]
+    pub baseline_status: String,
+    #[serde(default)]
+    pub baseline_summary: BaselineSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stale_docs: Vec<FreshnessItem>,
     pub summary: ArtifactSummary,
@@ -73,6 +85,10 @@ pub struct Report {
     #[serde(default = "default_freshness_status")]
     pub freshness_status: String,
     pub freshness_summary: FreshnessSummary,
+    #[serde(default = "default_baseline_status")]
+    pub baseline_status: String,
+    #[serde(default)]
+    pub baseline_summary: BaselineSummary,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stale_docs: Vec<FreshnessItem>,
     pub detail: String,
@@ -105,6 +121,12 @@ pub struct RuleCount {
     pub count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BaselineSummary {
+    pub active_count: usize,
+    pub suppressed_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiagnosticItem {
     pub diagnostic_id: String,
@@ -116,6 +138,8 @@ pub struct DiagnosticItem {
     pub required_mode: Option<String>,
     pub failure_reason: String,
     pub suggested_action: String,
+    #[serde(default = "default_baseline_state")]
+    pub baseline_state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_source: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -134,6 +158,8 @@ pub struct DiagnosticRecord {
     pub required_mode: Option<String>,
     pub failure_reason: String,
     pub suggested_action: String,
+    #[serde(default = "default_baseline_state")]
+    pub baseline_state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_source: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -340,6 +366,7 @@ impl DiagnosticRecord {
             required_mode: self.required_mode.clone(),
             failure_reason: self.failure_reason.clone(),
             suggested_action: self.suggested_action.clone(),
+            baseline_state: self.baseline_state.clone(),
             rule_source: (detail == DiagnosticDetail::Full)
                 .then(|| self.rule_source.clone())
                 .flatten(),
@@ -402,6 +429,7 @@ pub fn emit_diagnostic_show(record: &DiagnosticRecord, format: DiagnosticsOutput
             );
             println!("failure_reason={}", record.failure_reason);
             println!("suggested_action={}", record.suggested_action);
+            println!("baseline_state={}", record.baseline_state);
             if let Some(rule_source) = &record.rule_source {
                 println!("rule_source={rule_source}");
             }
@@ -467,6 +495,7 @@ pub fn build_diagnostics_artifact_with_freshness(
             required_mode: problem.required_mode,
             failure_reason: problem.failure_reason,
             suggested_action: problem.suggested_action,
+            baseline_state: default_baseline_state(),
             rule_source: problem.rule_source,
             trigger_paths: problem.trigger_paths,
             rule_reason: problem.rule_reason,
@@ -523,6 +552,11 @@ pub fn build_diagnostics_artifact_with_freshness(
         freshness_summary: lint_freshness
             .map(|report| report.summary.clone())
             .unwrap_or_default(),
+        baseline_status: default_baseline_status(),
+        baseline_summary: BaselineSummary {
+            active_count: diagnostics.len(),
+            suppressed_count: 0,
+        },
         stale_docs: lint_freshness
             .map(|report| report.stale_docs.clone())
             .unwrap_or_default(),
@@ -563,6 +597,8 @@ pub fn build_report_from_artifact(
         coverage_status: artifact.coverage_status.clone(),
         freshness_status: artifact.freshness_status.clone(),
         freshness_summary: artifact.freshness_summary.clone(),
+        baseline_status: artifact.baseline_status.clone(),
+        baseline_summary: artifact.baseline_summary.clone(),
         stale_docs: artifact.stale_docs.clone(),
         detail: detail.as_str().into(),
         summary: paged.summary.clone(),
@@ -604,6 +640,7 @@ pub fn build_sarif_log_from_artifact(artifact: &DiagnosticsArtifact, mode: LintM
             results: artifact
                 .diagnostics
                 .iter()
+                .filter(|diagnostic| diagnostic.baseline_state == "active")
                 .map(|diagnostic| SarifResult {
                     rule_id: sarif_rule_id(diagnostic).into(),
                     level: level.clone(),
@@ -643,18 +680,19 @@ fn build_paginated_diagnostics(
     requested_page: usize,
     page_size: usize,
 ) -> PaginatedDiagnostics {
-    let total_count = diagnostics.len();
+    let ordered = ordered_diagnostics_for_report(diagnostics);
+    let total_count = ordered.len();
     let total_pages = usize::max(1, total_count.div_ceil(page_size));
     let page = requested_page.min(total_pages);
     let has_next_page = page < total_pages;
     let next_page = has_next_page.then_some(page + 1);
 
-    let items = if detail == DiagnosticDetail::Summary || diagnostics.is_empty() {
+    let items = if detail == DiagnosticDetail::Summary || ordered.is_empty() {
         Vec::new()
     } else {
         let start = (page - 1) * page_size;
         let end = usize::min(start + page_size, total_count);
-        diagnostics[start..end]
+        ordered[start..end]
             .iter()
             .map(|record| record.to_item(detail))
             .collect()
@@ -688,15 +726,25 @@ fn emit_text_report(report: &Report, mode: LintMode) {
         return;
     }
 
-    let heading = match mode {
-        LintMode::Enforce => "Docpact found blocking problems:",
-        LintMode::Warn => "Docpact found warnings:",
+    let heading = if report.baseline_summary.active_count == 0
+        && report.baseline_summary.suppressed_count > 0
+    {
+        "Docpact found baseline-suppressed findings:"
+    } else if report.baseline_summary.suppressed_count > 0 {
+        "Docpact found active and baseline-suppressed findings:"
+    } else {
+        match mode {
+            LintMode::Enforce => "Docpact found blocking problems:",
+            LintMode::Warn => "Docpact found warnings:",
+        }
     };
 
     println!("{heading}");
     println!(
-        "Summary: total={}, counts_by_type={}, top_rules={}, coverage_status={}, uncovered={}, freshness_status={}, stale_docs={}, critical_stale_docs={}, invalid_baselines={}, page={}/{}, page_size={}",
+        "Summary: total={}, active={}, suppressed_by_baseline={}, counts_by_type={}, top_rules={}, coverage_status={}, uncovered={}, freshness_status={}, stale_docs={}, critical_stale_docs={}, invalid_review_references={}, baseline_status={}, page={}/{}, page_size={}",
         report.total_count,
+        report.baseline_summary.active_count,
+        report.baseline_summary.suppressed_count,
         format_counts_by_type(&report.summary.counts_by_type),
         format_top_rules(&report.summary.top_rules),
         report.coverage_status,
@@ -704,7 +752,8 @@ fn emit_text_report(report: &Report, mode: LintMode) {
         report.freshness_status,
         report.freshness_summary.stale_doc_count,
         report.freshness_summary.critical_count,
-        report.freshness_summary.invalid_baseline_count,
+        report.freshness_summary.invalid_review_reference_count,
+        report.baseline_status,
         report.page,
         report.total_pages,
         report.page_size,
@@ -865,6 +914,7 @@ fn format_item(item: &DiagnosticItem) -> String {
         format!("mode={}", item.required_mode.as_deref().unwrap_or("n/a")),
         format!("reason={}", item.failure_reason),
         format!("action={}", item.suggested_action),
+        format!("baseline_state={}", item.baseline_state),
     ];
 
     if let Some(rule_source) = &item.rule_source {
@@ -888,8 +938,29 @@ fn emit_annotations(diagnostics: &[DiagnosticRecord], mode: LintMode) {
         LintMode::Warn => "warning",
     };
 
-    for diagnostic in diagnostics {
+    for diagnostic in diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.baseline_state == "active")
+    {
         println!("::{level} file={}::{}", diagnostic.path, diagnostic.message);
+    }
+}
+
+fn ordered_diagnostics_for_report(diagnostics: &[DiagnosticRecord]) -> Vec<&DiagnosticRecord> {
+    let mut ordered = diagnostics.iter().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        baseline_rank(&left.baseline_state)
+            .cmp(&baseline_rank(&right.baseline_state))
+            .then_with(|| left.diagnostic_id.cmp(&right.diagnostic_id))
+    });
+    ordered
+}
+
+fn baseline_rank(state: &str) -> usize {
+    match state {
+        "active" => 0,
+        "suppressed_by_baseline" => 1,
+        _ => 2,
     }
 }
 
@@ -936,7 +1007,7 @@ mod tests {
                 stale_doc_count: 2,
                 warn_count: 1,
                 critical_count: 1,
-                invalid_baseline_count: 1,
+                invalid_review_reference_count: 1,
             },
             stale_docs: vec![FreshnessItem {
                 path: "docs/api.md".into(),
@@ -947,7 +1018,7 @@ mod tests {
                 associated_changed_paths: vec!["src/api/client.ts".into()],
                 associated_changed_paths_count: 1,
                 staleness_level: "critical".into(),
-                baseline_problems: vec!["invalid-lastReviewedCommit".into()],
+                review_reference_problems: vec!["invalid-lastReviewedCommit".into()],
             }],
         }
     }
@@ -1005,6 +1076,8 @@ mod tests {
         assert_eq!(artifact.coverage_status, "has-uncovered-change");
         assert_eq!(artifact.freshness_status, "has-critical-stale-doc");
         assert_eq!(artifact.freshness_summary.critical_count, 1);
+        assert_eq!(artifact.baseline_status, "not-applied");
+        assert_eq!(artifact.baseline_summary.active_count, 2);
         assert_eq!(artifact.stale_docs.len(), 1);
     }
 

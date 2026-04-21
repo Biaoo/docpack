@@ -1,3 +1,4 @@
+pub mod baseline;
 pub mod check;
 pub mod cli;
 pub mod config;
@@ -27,6 +28,7 @@ pub enum AppExit {
 pub fn run(cli: Cli) -> Result<AppExit> {
     match cli.command {
         Commands::Lint(args) => check::run(args),
+        Commands::Baseline(args) => baseline::run(args),
         Commands::ListRules(args) => list_rules::run(args),
         Commands::Doctor(args) => doctor::run(args),
         Commands::Coverage(args) => coverage::run(args),

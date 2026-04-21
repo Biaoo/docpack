@@ -5,6 +5,7 @@ use miette::Result;
 use yaml_serde::Value;
 
 use crate::AppExit;
+use crate::baseline::{apply_baseline, read_baseline_file};
 use crate::cli::LintArgs;
 use crate::config::{
     LoadedCoverageConfig, load_coverage_configs, load_yaml_value, parse_yaml_value,
@@ -42,6 +43,11 @@ pub fn run(args: LintArgs) -> Result<AppExit> {
         run.matched_rules.len(),
         Some(&lint_freshness),
     );
+    let mut artifact = artifact;
+    if let Some(baseline_path) = args.baseline.as_deref() {
+        let baseline = read_baseline_file(baseline_path)?;
+        apply_baseline(&mut artifact, &baseline);
+    }
     let report_path = resolve_report_output_path(&root_dir, args.output.as_deref())?;
     write_diagnostics_artifact(&report_path, &artifact)?;
 
@@ -66,13 +72,16 @@ pub fn run(args: LintArgs) -> Result<AppExit> {
         });
     emit_report_hint(args.format, &display_path, drilldown_id);
 
-    let has_uncovered_change = artifact
+    let has_uncovered_change = artifact.diagnostics.iter().any(|diagnostic| {
+        diagnostic.problem_type == "uncovered-change" && diagnostic.baseline_state == "active"
+    });
+    let has_active_diagnostics = artifact
         .diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.problem_type == "uncovered-change");
+        .any(|diagnostic| diagnostic.baseline_state == "active");
     let has_critical_stale_doc = artifact.freshness_summary.critical_count > 0;
 
-    if (args.mode == crate::cli::LintMode::Enforce && !artifact.diagnostics.is_empty())
+    if (args.mode == crate::cli::LintMode::Enforce && has_active_diagnostics)
         || (args.fail_on_uncovered_change && has_uncovered_change)
         || (args.fail_on_stale_docs && has_critical_stale_doc)
     {
@@ -507,6 +516,7 @@ mod tests {
             diagnostics_page_size: 5,
             fail_on_uncovered_change: false,
             fail_on_stale_docs: false,
+            baseline: None,
             output: None,
         }
     }
