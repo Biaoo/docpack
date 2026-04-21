@@ -1,0 +1,25 @@
+name: docpact-coverage-audit
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  docpact:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out target repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run docpact coverage audit
+        uses: your-org/docpact@v1
+        with:
+          version: 0.1.0
+          args: >
+            coverage
+            --root .
+            --format json

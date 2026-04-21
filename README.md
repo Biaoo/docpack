@@ -38,6 +38,7 @@ If you are developing `docpact` itself, local source workflows are still support
 - [../docs/usage.md](../docs/usage.md) / [../docs/usage.zh-CN.md](../docs/usage.zh-CN.md): quick start, commands, diff modes, outputs, and local workflow
 - [../docs/configuration.md](../docs/configuration.md) / [../docs/configuration.zh-CN.md](../docs/configuration.zh-CN.md): detailed config reference and rule behavior
 - [../docs/github-actions.md](../docs/github-actions.md) / [../docs/github-actions.zh-CN.md](../docs/github-actions.zh-CN.md): GitHub Actions integration examples
+- [examples/github-actions/](./examples/github-actions): official workflow examples for PR lint, adoption controls, coverage audit, and freshness audit
 - [../docs/product-vision.md](../docs/product-vision.md) / [../docs/product-vision.zh-CN.md](../docs/product-vision.zh-CN.md): product positioning, scope, and roadmap
 - [../docs/roadmap.md](../docs/roadmap.md) / [../docs/roadmap.zh-CN.md](../docs/roadmap.zh-CN.md): staged delivery plan, coverage milestones, and priorities
 - [../docs/features.md](../docs/features.md) / [../docs/features.zh-CN.md](../docs/features.zh-CN.md): current capabilities, limitations, and implementation notes
@@ -59,4 +60,4 @@ This repository currently contains a working Phase 1 core:
 - warning vs blocking exit behavior
 - text and JSON-capable reporting surfaces
 
-It is not yet the full planned product. Higher-order drift detection, autofix, richer config validation, an official GitHub Action wrapper, and published package distribution remain future work.
+It is not yet the full planned product. Higher-order drift detection, autofix, richer config validation, and broader ecosystem integrations remain future work.

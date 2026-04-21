@@ -1,0 +1,24 @@
+name: docpact-pr-lint
+
+on:
+  pull_request:
+
+jobs:
+  docpact:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out target repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run docpact lint
+        uses: your-org/docpact@v1
+        with:
+          version: 0.1.0
+          args: >
+            lint
+            --root .
+            --base ${{ github.event.pull_request.base.sha }}
+            --head ${{ github.sha }}
+            --mode enforce

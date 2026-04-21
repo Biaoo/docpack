@@ -1,0 +1,40 @@
+name: "docpact"
+description: "Thin official wrapper around the docpact CLI for GitHub Actions."
+inputs:
+  version:
+    description: "docpact crate version to install. Use `latest` for the newest published release."
+    required: false
+    default: "latest"
+  args:
+    description: "Arguments passed directly to the `docpact` CLI, for example `lint --root . --mode enforce`."
+    required: true
+outputs:
+  version:
+    description: "Installed docpact CLI version."
+    value: ${{ steps.install.outputs.version }}
+runs:
+  using: "composite"
+  steps:
+    - name: Install stable Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install docpact
+      id: install
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [[ "${{ inputs.version }}" == "latest" ]]; then
+          cargo install docpact --force
+        else
+          cargo install docpact --version "${{ inputs.version }}" --force
+        fi
+
+        installed_version="$(docpact --version | awk '{print $2}')"
+        echo "version=${installed_version}" >> "$GITHUB_OUTPUT"
+
+    - name: Run docpact
+      shell: bash
+      run: |
+        set -euo pipefail
+        docpact ${{ inputs.args }}
