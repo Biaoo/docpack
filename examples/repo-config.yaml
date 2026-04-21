@@ -9,6 +9,14 @@ coverage:
   exclude:
     - dist/**
     - vendor/**
+docInventory:
+  include:
+    - README.md
+    - docs/**
+    - .docpact/**/*.md
+    - .docpact/**/*.yaml
+  exclude:
+    - docs/archive/**
 repo:
   id: sample-sdk
   owner: sample-sdk

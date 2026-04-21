@@ -8,6 +8,13 @@ coverage:
     - .github/**
   exclude:
     - vendor/**
+docInventory:
+  include:
+    - AGENTS.md
+    - docs/**
+    - .docpact/**/*.yaml
+  exclude:
+    - docs/archive/**
 workspace:
   name: sample-workspace
   repos:

@@ -65,6 +65,10 @@ pub fn get_head_commit(root_dir: &Path) -> Result<String> {
     git_stdout(root_dir, &["rev-parse", "HEAD"])
 }
 
+pub fn get_tracked_paths(root_dir: &Path) -> Result<Vec<String>> {
+    git_name_only(root_dir, &["ls-files"])
+}
+
 pub fn get_file_comparison(
     root_dir: &Path,
     args: &LintArgs,

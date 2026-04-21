@@ -34,12 +34,22 @@ struct ConfigFile {
     layout: ConfigLayout,
     #[serde(default)]
     coverage: CoverageConfig,
+    #[serde(rename = "docInventory", default)]
+    doc_inventory: DocInventoryConfig,
     #[serde(default)]
     rules: Vec<Rule>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct CoverageConfig {
+    #[serde(default)]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct DocInventoryConfig {
     #[serde(default)]
     pub include: Vec<String>,
     #[serde(default)]
@@ -89,6 +99,13 @@ pub struct LoadedCoverageConfig {
     pub source: String,
     pub base_dir: String,
     pub coverage: CoverageConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedDocInventoryConfig {
+    pub source: String,
+    pub base_dir: String,
+    pub doc_inventory: DocInventoryConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,6 +291,24 @@ pub fn load_coverage_configs(
     Ok(loaded)
 }
 
+pub fn load_doc_inventory_configs(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<LoadedDocInventoryConfig>> {
+    let mut loaded = Vec::new();
+
+    for descriptor in list_impact_files(root_dir, config_override)? {
+        let parsed = load_config_file(&descriptor.abs_path, &descriptor.rel_path)?;
+        loaded.push(LoadedDocInventoryConfig {
+            source: descriptor.rel_path,
+            base_dir: descriptor.base_dir,
+            doc_inventory: parsed.doc_inventory,
+        });
+    }
+
+    Ok(loaded)
+}
+
 pub fn validate_loaded_rules(loaded_rules: &[LoadedRule]) -> Vec<ConfigValidationProblem> {
     let mut problems = Vec::new();
     let mut rule_sources = BTreeMap::<String, Vec<&LoadedRule>>::new();
@@ -349,6 +384,44 @@ pub fn validate_loaded_coverage_configs(
                     source: loaded.source.clone(),
                     rule_id: None,
                     message: format!("coverage.exclude[{index}] {message}"),
+                });
+            }
+        }
+    }
+
+    problems.sort_by(|left, right| {
+        (&left.source, &left.rule_id, &left.message).cmp(&(
+            &right.source,
+            &right.rule_id,
+            &right.message,
+        ))
+    });
+
+    problems
+}
+
+pub fn validate_loaded_doc_inventory_configs(
+    loaded_configs: &[LoadedDocInventoryConfig],
+) -> Vec<ConfigValidationProblem> {
+    let mut problems = Vec::new();
+
+    for loaded in loaded_configs {
+        for (index, pattern) in loaded.doc_inventory.include.iter().enumerate() {
+            if let Some(message) = validate_trigger_path(pattern) {
+                problems.push(ConfigValidationProblem {
+                    source: loaded.source.clone(),
+                    rule_id: None,
+                    message: format!("docInventory.include[{index}] {message}"),
+                });
+            }
+        }
+
+        for (index, pattern) in loaded.doc_inventory.exclude.iter().enumerate() {
+            if let Some(message) = validate_trigger_path(pattern) {
+                problems.push(ConfigValidationProblem {
+                    source: loaded.source.clone(),
+                    rule_id: None,
+                    message: format!("docInventory.exclude[{index}] {message}"),
                 });
             }
         }
@@ -531,9 +604,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        CONFIG_FILE, CoverageConfig, DOC_ROOT_DIR, ImpactLayout, LoadedCoverageConfig, LoadedRule,
-        RequiredDoc, Rule, Trigger, detect_impact_layout, load_coverage_configs, load_impact_files,
-        normalize_path, resolve_rule_path, validate_loaded_coverage_configs, validate_loaded_rules,
+        CONFIG_FILE, CoverageConfig, DOC_ROOT_DIR, DocInventoryConfig, ImpactLayout,
+        LoadedCoverageConfig, LoadedDocInventoryConfig, LoadedRule, RequiredDoc, Rule, Trigger,
+        detect_impact_layout, load_coverage_configs, load_doc_inventory_configs, load_impact_files,
+        normalize_path, resolve_rule_path, validate_loaded_coverage_configs,
+        validate_loaded_doc_inventory_configs, validate_loaded_rules,
     };
 
     fn temp_dir(prefix: &str) -> PathBuf {
@@ -794,5 +869,83 @@ rules: []
                 .iter()
                 .any(|message| message.contains("coverage.exclude[0] must not contain `.` or `..`"))
         );
+    }
+
+    #[test]
+    fn load_doc_inventory_configs_resolves_workspace_entries() {
+        let root = temp_dir("docpact-load-doc-inventory");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("root doc dir");
+        fs::create_dir_all(root.join(format!("subrepo/{DOC_ROOT_DIR}"))).expect("subrepo doc dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+lastReviewedAt: "2026-04-18"
+lastReviewedCommit: "abc"
+docInventory:
+  include:
+    - docs/**
+rules: []
+"#,
+        )
+        .expect("root config");
+
+        fs::write(
+            root.join(format!("subrepo/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+lastReviewedAt: "2026-04-18"
+lastReviewedCommit: "abc"
+docInventory:
+  include:
+    - README.md
+  exclude:
+    - docs/archive/**
+repo:
+  id: subrepo
+rules: []
+"#,
+        )
+        .expect("subrepo config");
+
+        let loaded =
+            load_doc_inventory_configs(&root, None).expect("doc inventory configs should load");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].doc_inventory.include, vec!["docs/**".to_string()]);
+        assert_eq!(loaded[1].base_dir, "subrepo");
+        assert_eq!(
+            loaded[1].doc_inventory.exclude,
+            vec!["docs/archive/**".to_string()]
+        );
+    }
+
+    #[test]
+    fn strict_validation_reports_invalid_doc_inventory_patterns() {
+        let loaded = vec![LoadedDocInventoryConfig {
+            source: ".docpact/config.yaml".into(),
+            base_dir: String::new(),
+            doc_inventory: DocInventoryConfig {
+                include: vec!["docs/***".into()],
+                exclude: vec!["../notes/**".into()],
+            },
+        }];
+
+        let problems = validate_loaded_doc_inventory_configs(&loaded);
+        let messages = problems
+            .iter()
+            .map(|problem| problem.message.clone())
+            .collect::<Vec<_>>();
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("docInventory.include[0] contains malformed glob"))
+        );
+        assert!(messages.iter().any(|message| {
+            message.contains("docInventory.exclude[0] must not contain `.` or `..`")
+        }));
     }
 }

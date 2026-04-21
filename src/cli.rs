@@ -16,6 +16,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     Lint(LintArgs),
+    Coverage(CoverageArgs),
     Diagnostics(DiagnosticsArgs),
     Review(ReviewArgs),
     Explain(ExplainArgs),
@@ -54,6 +55,16 @@ pub struct LintArgs {
     pub fail_on_uncovered_change: bool,
     #[arg(long)]
     pub output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct CoverageArgs {
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = CoverageOutputFormat::Text)]
+    pub format: CoverageOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -139,6 +150,12 @@ pub enum OutputFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CoverageOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum DiagnosticsOutputFormat {
     Text,
     Json,
@@ -212,8 +229,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Cli, Commands, DiagnosticDetail, DiagnosticsCommands, DiagnosticsOutputFormat, LintMode,
-        OutputFormat, ReviewCommands, ReviewOutputFormat,
+        Cli, Commands, CoverageOutputFormat, DiagnosticDetail, DiagnosticsCommands,
+        DiagnosticsOutputFormat, LintMode, OutputFormat, ReviewCommands, ReviewOutputFormat,
     };
 
     #[test]
@@ -287,6 +304,20 @@ mod tests {
                 }
             },
             _ => panic!("expected diagnostics command"),
+        }
+    }
+
+    #[test]
+    fn parses_coverage_command() {
+        let cli = Cli::try_parse_from(["docpact", "coverage", "--root", ".", "--format", "json"])
+            .expect("cli should parse");
+
+        match cli.command {
+            Commands::Coverage(args) => {
+                assert_eq!(args.root.as_deref(), Some(std::path::Path::new(".")));
+                assert_eq!(args.format, CoverageOutputFormat::Json);
+            }
+            _ => panic!("expected coverage command"),
         }
     }
 
