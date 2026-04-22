@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rule Audit"
+  short_description: "Audit docpact rule graph quality."
+  default_prompt: "Use $rule-audit to inspect docpact rule graph quality and propose refactoring follow-ups."

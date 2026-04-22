@@ -49,6 +49,7 @@ Repository-specific or organization-specific skills should live outside the core
 - `rule-authoring`: turn uncovered areas or governance requirements into the smallest correct rule draft, with explicit reuse/replace/add decisions and strict config validation handoff.
 - `coverage-backfill`: turn coverage audit gaps into grouped, prioritized backfill tasks, with explicit handoff to `rule-authoring` for concrete rule drafts.
 - `routing-configuration`: maintain controlled `routing.intents` aliases and workspace routing overrides without expanding route into free-text intent handling.
+- `rule-audit`: inspect rule graph quality using `list-rules`, `coverage`, and `doctor`, then hand refactor work back to `rule-authoring` instead of editing rules inside the audit.
 
 ## Authoring Guidance
 
