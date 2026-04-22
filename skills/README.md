@@ -46,7 +46,7 @@ Repository-specific or organization-specific skills should live outside the core
 
 ### Direct Workflow Entrypoint
 
-- `docpact`: top-level direct workflow entrypoint for before-coding document discovery, after-coding lint/drill-down/review-mark flows, and ongoing freshness checks.
+- `docpact`: top-level direct workflow entrypoint for before-coding document discovery, after-coding lint/drill-down/review-mark flows, ongoing freshness checks, and compact read-only summaries when `render` is the better fit than full route output.
 
 ### Shared Remediation
 
@@ -54,7 +54,7 @@ Repository-specific or organization-specific skills should live outside the core
 
 ### Governance Maintainer Skills
 
-- `docpact-governance`: top-level governance-maintainer entrypoint that routes maintainer work to the correct official skill, keeps direct workflow separate, and falls back to deterministic CLI inspection when no official maintainer skill fits.
+- `docpact-governance`: top-level governance-maintainer entrypoint that routes maintainer work to the correct official skill, keeps direct workflow separate, and falls back to deterministic CLI inspection such as `doctor`, `coverage`, or `render` when no official maintainer skill fits.
 - `repository-onboarding`: guide first-time repository adoption around `doctor`, `list-rules`, `coverage`, `validate-config --strict`, and baseline-first staged rollout.
 - `rule-authoring`: turn uncovered areas or governance requirements into the smallest correct rule draft, with explicit reuse/replace/add decisions and strict config validation handoff.
 - `coverage-backfill`: turn coverage audit gaps into grouped, prioritized backfill tasks, with explicit handoff to `rule-authoring` for concrete rule drafts.

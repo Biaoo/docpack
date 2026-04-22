@@ -27,6 +27,7 @@ In agentic coding workflows, that usually breaks down in three places:
 - `route` helps decide what to read before coding
 - `lint` enforces which governed docs should have been reviewed or updated after coding
 - `freshness` detects governed docs that may no longer be trustworthy
+- `render` exposes short, read-only summaries over catalog, ownership, navigation, and workspace context
 
 Public design principles:
 
@@ -131,6 +132,13 @@ docpact route --root /path/to/repo --module src/payments --format text
 docpact route --root /path/to/repo --intent payments --format json
 ```
 
+### Render derived summaries
+
+```bash
+docpact render --root /path/to/repo --view catalog-summary --format json
+docpact render --root /path/to/repo --view navigation-summary --paths src/payments/** --format text
+```
+
 ## Adoption Controls
 
 `docpact` supports explicit adoption controls for repositories that cannot enforce all existing debt immediately.
@@ -211,6 +219,7 @@ Current `docpact` capabilities include:
 - diff coverage and repository coverage audit
 - repository freshness audit
 - deterministic routing with paths, module scope, and controlled intents
+- read-only derived render views for catalog, ownership, navigation, and workspace summaries
 - report-backed diagnostics drill-down
 - explicit review-evidence recording
 - baseline and waiver lifecycle

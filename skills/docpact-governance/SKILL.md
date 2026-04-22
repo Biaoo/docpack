@@ -63,6 +63,8 @@ docpact doctor --root <repo> --format json
 docpact list-rules --root <repo> --format json
 docpact coverage --root <repo> --format json
 docpact freshness --root <repo> --format json
+docpact render --root <repo> --view catalog-summary --format json
+docpact render --root <repo> --view ownership-summary --format json
 docpact validate-config --root <repo> --strict
 ```
 
@@ -78,14 +80,19 @@ Typical usage:
   - `validate-config --strict`
 - routing configuration
   - `route`
+  - optionally `render --view navigation-summary` when a shorter derived navigation snapshot is enough
   - `validate-config --strict`
   - optionally `doctor` in workspace layouts
+- ownership or catalog context review
+  - `render --view catalog-summary`
+  - `render --view ownership-summary`
+  - optionally `doctor` when tracked-path overlap/conflict surfacing matters
 - CI integration
   - inspect existing workflow files
   - align them with the official action and documented trigger patterns
 - documentation maintenance
   - `freshness`
-  - optionally `list-rules`, `coverage`, or `route`
+  - optionally `list-rules`, `coverage`, `route`, or `render --view ownership-summary`
 
 If the problem cannot yet be classified from structured evidence, say that explicitly instead of guessing.
 
@@ -129,6 +136,8 @@ docpact doctor --root <repo> --format json
 docpact list-rules --root <repo> --format json
 docpact coverage --root <repo> --format json
 docpact freshness --root <repo> --format json
+docpact render --root <repo> --view catalog-summary --format json
+docpact render --root <repo> --view ownership-summary --format json
 docpact validate-config --root <repo> --strict
 ```
 

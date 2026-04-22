@@ -35,6 +35,15 @@ docpact route --root <repo> --intent <alias> --format json
 
 Use `--detail full` only when you need the score breakdown, matched triggers, or provenance. Start with compact JSON for agent efficiency.
 
+If the task only needs a shorter derived summary over the existing navigation result, use `render` instead of inventing a new route shape:
+
+```bash
+docpact render --root <repo> --view navigation-summary --paths <csv> --format json
+docpact render --root <repo> --view navigation-summary --module <prefix> --format text
+```
+
+Use `render` here only as a read-only summary layer over the same route pipeline. It does not replace `route` when full recommendation JSON or explanation detail is required.
+
 If the repository does not have useful routing behavior yet, do not invent new route semantics here. Hand off to:
 
 - `routing-configuration` when the task is "define or fix controlled intent aliases"
@@ -110,6 +119,30 @@ Use this when:
 
 If the freshness result leads to stale-doc remediation, config work, or rule maintenance, that is no longer a direct workflow problem. Hand off to the appropriate maintainer workflow instead of forcing the direct workflow path.
 
+### 5. Read-only summaries when you need compact context
+
+Use `render` when you already know the question is about short derived context, not full governance evaluation.
+
+Typical commands:
+
+```bash
+docpact render --root <repo> --view catalog-summary --format json
+docpact render --root <repo> --view ownership-summary --format json
+docpact render --root <repo> --view workspace-summary --format text
+```
+
+Use this path when you need:
+
+- deterministic repo entry and workflow pointers from `catalog`
+- ownership-domain summary without running full route detail
+- a short workspace-facing summary over catalog and ownership facts
+
+Do not use `render` as a replacement for:
+
+- `route` when you still need the governed/advisory recommendation set
+- `lint` when you need governance judgment
+- `freshness` when you need stale-doc evaluation
+
 ## Handoff Rules
 
 Stay in this direct workflow skill when the question is:
@@ -147,5 +180,7 @@ Always include:
 - the minimum required inputs for that command
 - whether a saved report artifact is needed
 - whether the task should remain in direct workflow or hand off to a maintainer skill
+
+When the first command is `render`, state which derived view is the smallest correct one.
 
 Use the templates in `assets/` instead of inventing a new output structure each time.
