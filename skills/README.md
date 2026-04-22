@@ -44,6 +44,7 @@ Repository-specific or organization-specific skills should live outside the core
 
 ## Implemented Skills
 
+- `docpact`: top-level direct workflow entrypoint for before-coding document discovery, after-coding lint/drill-down/review-mark flows, and ongoing freshness checks.
 - `repository-onboarding`: guide first-time repository adoption around `doctor`, `list-rules`, `coverage`, `validate-config --strict`, and baseline-first staged rollout.
 - `failure-repair`: diagnose one lint finding from a structured report and choose the correct repair path across doc edits, review evidence refresh, config repair, or adoption-control escalation.
 - `rule-authoring`: turn uncovered areas or governance requirements into the smallest correct rule draft, with explicit reuse/replace/add decisions and strict config validation handoff.

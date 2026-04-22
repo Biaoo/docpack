@@ -1,0 +1,4 @@
+interface:
+  display_name: "Docpact"
+  short_description: "Use docpact in direct task workflows."
+  default_prompt: "Use $docpact to decide which docpact CLI command to run before coding, after coding, or during ongoing trust checks."
