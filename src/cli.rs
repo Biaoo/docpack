@@ -18,6 +18,7 @@ pub enum Commands {
     Lint(LintArgs),
     Baseline(BaselineArgs),
     Waiver(WaiverArgs),
+    Route(RouteArgs),
     ListRules(ListRulesArgs),
     Doctor(DoctorArgs),
     Coverage(CoverageArgs),
@@ -130,6 +131,18 @@ pub struct CoverageArgs {
     pub config: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = CoverageOutputFormat::Text)]
     pub format: CoverageOutputFormat,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct RouteArgs {
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+    #[arg(long)]
+    pub paths: String,
+    #[arg(long, value_enum, default_value_t = RouteOutputFormat::Text)]
+    pub format: RouteOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -263,6 +276,12 @@ pub enum CoverageOutputFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RouteOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FreshnessOutputFormat {
     Text,
     Json,
@@ -351,7 +370,7 @@ mod tests {
         BaselineCommands, Cli, Commands, CoverageOutputFormat, DiagnosticDetail,
         DiagnosticsCommands, DiagnosticsOutputFormat, DoctorOutputFormat, FreshnessOutputFormat,
         LintMode, ListRulesOutputFormat, OutputFormat, ReviewCommands, ReviewOutputFormat,
-        WaiverCommands, WaiverOutputFormat,
+        RouteOutputFormat, WaiverCommands, WaiverOutputFormat,
     };
 
     #[test]
@@ -439,6 +458,36 @@ mod tests {
                 }
             },
             _ => panic!("expected diagnostics command"),
+        }
+    }
+
+    #[test]
+    fn parses_route_command() {
+        let cli = Cli::try_parse_from([
+            "docpact",
+            "route",
+            "--root",
+            ".",
+            "--config",
+            ".docpact/config.yaml",
+            "--paths",
+            "src/payments/charge.ts,src/payments/refund.ts",
+            "--format",
+            "json",
+        ])
+        .expect("cli should parse");
+
+        match cli.command {
+            Commands::Route(args) => {
+                assert_eq!(args.root.as_deref(), Some(std::path::Path::new(".")));
+                assert_eq!(
+                    args.config.as_deref(),
+                    Some(std::path::Path::new(".docpact/config.yaml"))
+                );
+                assert_eq!(args.paths, "src/payments/charge.ts,src/payments/refund.ts");
+                assert_eq!(args.format, RouteOutputFormat::Json);
+            }
+            _ => panic!("expected route command"),
         }
     }
 

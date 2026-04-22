@@ -12,6 +12,7 @@ pub mod list_rules;
 pub mod metadata;
 pub mod reporters;
 pub mod review;
+pub mod route;
 pub mod rules;
 pub mod validate_config;
 pub mod waiver;
@@ -31,6 +32,7 @@ pub fn run(cli: Cli) -> Result<AppExit> {
         Commands::Lint(args) => check::run(args),
         Commands::Baseline(args) => baseline::run(args),
         Commands::Waiver(args) => waiver::run(args),
+        Commands::Route(args) => route::run(args),
         Commands::ListRules(args) => list_rules::run(args),
         Commands::Doctor(args) => doctor::run(args),
         Commands::Coverage(args) => coverage::run(args),
