@@ -28,6 +28,10 @@ In agentic coding workflows, that usually breaks down in three places:
 - `lint` enforces which governed docs should have been reviewed or updated after coding
 - `freshness` detects governed docs that may no longer be trustworthy
 
+Public design principles:
+
+- [docs/design-principles.md](./docs/design-principles.md)
+
 ## Install
 
 Install from crates.io:
@@ -167,7 +171,7 @@ Typical usage:
 ```yaml
 - uses: <org>/docpact@v1
   with:
-    version: 0.1.0
+    version: 0.1.1
     args: >
       lint
       --root .
