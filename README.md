@@ -39,6 +39,7 @@ If you are developing `docpact` itself, local source workflows are still support
 - [../docs/configuration.md](../docs/configuration.md) / [../docs/configuration.zh-CN.md](../docs/configuration.zh-CN.md): detailed config reference and rule behavior
 - [../docs/github-actions.md](../docs/github-actions.md) / [../docs/github-actions.zh-CN.md](../docs/github-actions.zh-CN.md): GitHub Actions integration examples
 - [examples/github-actions/](./examples/github-actions): official workflow examples for PR lint, adoption controls, coverage audit, and freshness audit
+- [skills/README.md](./skills/README.md): official skill layout, boundaries, and authoring conventions
 - [../docs/product-vision.md](../docs/product-vision.md) / [../docs/product-vision.zh-CN.md](../docs/product-vision.zh-CN.md): product positioning, scope, and roadmap
 - [../docs/roadmap.md](../docs/roadmap.md) / [../docs/roadmap.zh-CN.md](../docs/roadmap.zh-CN.md): staged delivery plan, coverage milestones, and priorities
 - [../docs/features.md](../docs/features.md) / [../docs/features.zh-CN.md](../docs/features.zh-CN.md): current capabilities, limitations, and implementation notes
