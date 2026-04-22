@@ -47,6 +47,7 @@ Repository-specific or organization-specific skills should live outside the core
 - `repository-onboarding`: guide first-time repository adoption around `doctor`, `list-rules`, `coverage`, `validate-config --strict`, and baseline-first staged rollout.
 - `failure-repair`: diagnose one lint finding from a structured report and choose the correct repair path across doc edits, review evidence refresh, config repair, or adoption-control escalation.
 - `rule-authoring`: turn uncovered areas or governance requirements into the smallest correct rule draft, with explicit reuse/replace/add decisions and strict config validation handoff.
+- `coverage-backfill`: turn coverage audit gaps into grouped, prioritized backfill tasks, with explicit handoff to `rule-authoring` for concrete rule drafts.
 
 ## Authoring Guidance
 
