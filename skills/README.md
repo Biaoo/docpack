@@ -54,6 +54,7 @@ Repository-specific or organization-specific skills should live outside the core
 
 ### Governance Maintainer Skills
 
+- `docpact-governance`: top-level governance-maintainer entrypoint that routes maintainer work to the correct official skill, keeps direct workflow separate, and falls back to deterministic CLI inspection when no official maintainer skill fits.
 - `repository-onboarding`: guide first-time repository adoption around `doctor`, `list-rules`, `coverage`, `validate-config --strict`, and baseline-first staged rollout.
 - `rule-authoring`: turn uncovered areas or governance requirements into the smallest correct rule draft, with explicit reuse/replace/add decisions and strict config validation handoff.
 - `coverage-backfill`: turn coverage audit gaps into grouped, prioritized backfill tasks, with explicit handoff to `rule-authoring` for concrete rule drafts.
@@ -61,8 +62,6 @@ Repository-specific or organization-specific skills should live outside the core
 - `rule-audit`: inspect rule graph quality using `list-rules`, `coverage`, and `doctor`, then hand refactor work back to `rule-authoring` instead of editing rules inside the audit.
 - `documentation-maintenance`: turn `freshness` signals into stale-doc remediation, review-evidence repair, structure cleanup, or governance escalation without weakening the existing rule graph.
 - `ci-integration`: design, review, and repair GitHub Actions integration around the thin official wrapper and existing CLI semantics without inventing a CI-only parameter model.
-
-Planned next maintainer-facing skill is the top-level `docpact-governance` maintainer orchestrator.
 
 ## Authoring Guidance
 

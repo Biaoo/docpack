@@ -122,6 +122,7 @@ Stay in this direct workflow skill when the question is:
 
 Hand off to maintainer-oriented skills when the question becomes:
 
+- which governance-maintainer workflow should we use for this repository problem? -> `docpact-governance`
 - how do we onboard this repository? -> `repository-onboarding`
 - how should we repair one explicit finding? -> `failure-repair` (shared remediation skill)
 - how should we design or change rules? -> `rule-authoring`
@@ -130,7 +131,7 @@ Hand off to maintainer-oriented skills when the question becomes:
 - how healthy is the current rule graph? -> `rule-audit`
 - how should we remediate stale docs or invalid review references? -> `documentation-maintenance`
 
-Until a dedicated governance orchestrator exists, route directly to those existing skills rather than trying to keep all maintainer logic in this skill.
+For broad governance-maintainer work, hand off to `docpact-governance`. Only route directly to a specific maintainer skill when the task is already clearly scoped.
 
 Read:
 
