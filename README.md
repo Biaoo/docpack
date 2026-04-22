@@ -10,6 +10,22 @@ It helps teams and agents answer three practical questions:
 
 `docpact` stays deterministic. It does not replace governance decisions with AI inference, and it does not hide state in background services or opaque caches.
 
+## Why docpact
+
+AI coding tools make code changes cheaper. They also make documentation drift cheaper.
+
+In agentic coding workflows, that usually breaks down in three places:
+
+- before coding: an agent does not know which documents it should read first, so it either loads too much, relies on coarse pointers, or skips discovery entirely
+- after coding: an agent does not know which documents should have been reviewed or updated as a consequence of the change
+- ongoing: an agent treats documentation as authoritative input, but has no built-in signal for whether that documentation has silently gone stale
+
+`docpact` closes that loop:
+
+- `route` helps decide what to read before coding
+- `lint` enforces which governed docs should have been reviewed or updated after coding
+- `freshness` detects governed docs that may no longer be trustworthy
+
 ## Install
 
 Install from crates.io:
