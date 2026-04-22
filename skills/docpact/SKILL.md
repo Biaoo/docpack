@@ -66,7 +66,7 @@ If `lint` returns findings and you need to inspect one exact result, move immedi
 docpact diagnostics show --report .docpact/runs/latest.json --id <diagnostic_id> --format json
 ```
 
-If the task becomes "repair this one finding," hand off to `failure-repair`.
+If the task becomes "repair this one finding," hand off to `failure-repair`. Treat it as a shared remediation skill, not as the governance-maintainer router.
 
 ### 3. After coding: record completed review evidence
 
@@ -108,7 +108,7 @@ Use this when:
 - triaging stale governance debt
 - checking whether review references are invalid
 
-If the freshness result leads to config or rule maintenance work, that is no longer a direct workflow problem. Hand off to the appropriate maintainer skill instead of forcing the direct workflow path.
+If the freshness result leads to stale-doc remediation, config work, or rule maintenance, that is no longer a direct workflow problem. Hand off to the appropriate maintainer workflow instead of forcing the direct workflow path.
 
 ## Handoff Rules
 
@@ -123,7 +123,7 @@ Stay in this direct workflow skill when the question is:
 Hand off to maintainer-oriented skills when the question becomes:
 
 - how do we onboard this repository? -> `repository-onboarding`
-- how should we repair one finding? -> `failure-repair`
+- how should we repair one explicit finding? -> `failure-repair` (shared remediation skill)
 - how should we design or change rules? -> `rule-authoring`
 - how should we turn uncovered hotspots into backlog? -> `coverage-backfill`
 - how should we maintain routing aliases? -> `routing-configuration`

@@ -9,6 +9,17 @@ Repair one `docpact` finding without redefining the engine's judgment.
 
 Use this skill only after you already have a structured lint report and a target `diagnostic_id`. Prefer `diagnostics show` and JSON report fields over terminal text. The goal is to select the correct repair path, not to debate whether the finding exists.
 
+This is a shared remediation skill:
+
+- use it from the top-level `docpact` direct workflow when one concrete after-coding finding needs repair
+- use it from governance-maintainer work only when broader maintenance has already narrowed to one explicit lint finding
+
+Do not use this skill as the primary workflow for:
+
+- repository-wide onboarding or historical debt rollout
+- broad rule-graph maintenance or coverage backlog planning
+- stale-doc maintenance driven by `freshness`
+
 ## Workflow
 
 ### 1. Load the exact finding

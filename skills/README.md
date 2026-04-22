@@ -44,13 +44,23 @@ Repository-specific or organization-specific skills should live outside the core
 
 ## Implemented Skills
 
+### Direct Workflow Entrypoint
+
 - `docpact`: top-level direct workflow entrypoint for before-coding document discovery, after-coding lint/drill-down/review-mark flows, and ongoing freshness checks.
+
+### Shared Remediation
+
+- `failure-repair`: diagnose one explicit lint finding from a structured report and choose the correct repair path across doc edits, review evidence refresh, config repair, or adoption-control escalation. This is a shared repair skill that can be entered from the direct workflow or from maintainer work when the problem narrows to one concrete finding.
+
+### Governance Maintainer Skills
+
 - `repository-onboarding`: guide first-time repository adoption around `doctor`, `list-rules`, `coverage`, `validate-config --strict`, and baseline-first staged rollout.
-- `failure-repair`: diagnose one lint finding from a structured report and choose the correct repair path across doc edits, review evidence refresh, config repair, or adoption-control escalation.
 - `rule-authoring`: turn uncovered areas or governance requirements into the smallest correct rule draft, with explicit reuse/replace/add decisions and strict config validation handoff.
 - `coverage-backfill`: turn coverage audit gaps into grouped, prioritized backfill tasks, with explicit handoff to `rule-authoring` for concrete rule drafts.
 - `routing-configuration`: maintain controlled `routing.intents` aliases and workspace routing overrides without expanding route into free-text intent handling.
 - `rule-audit`: inspect rule graph quality using `list-rules`, `coverage`, and `doctor`, then hand refactor work back to `rule-authoring` instead of editing rules inside the audit.
+
+Planned next maintainer-facing skills include `ci-integration`, `documentation-maintenance`, and the top-level `docpact-governance` maintainer orchestrator.
 
 ## Authoring Guidance
 
