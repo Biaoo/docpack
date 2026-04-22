@@ -141,6 +141,10 @@ pub struct RouteArgs {
     pub config: Option<PathBuf>,
     #[arg(long)]
     pub paths: String,
+    #[arg(long, value_enum, default_value_t = RouteDetail::Compact)]
+    pub detail: RouteDetail,
+    #[arg(long, value_parser = parse_positive_usize)]
+    pub limit: Option<usize>,
     #[arg(long, value_enum, default_value_t = RouteOutputFormat::Text)]
     pub format: RouteOutputFormat,
 }
@@ -282,6 +286,12 @@ pub enum RouteOutputFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RouteDetail {
+    Compact,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FreshnessOutputFormat {
     Text,
     Json,
@@ -370,7 +380,7 @@ mod tests {
         BaselineCommands, Cli, Commands, CoverageOutputFormat, DiagnosticDetail,
         DiagnosticsCommands, DiagnosticsOutputFormat, DoctorOutputFormat, FreshnessOutputFormat,
         LintMode, ListRulesOutputFormat, OutputFormat, ReviewCommands, ReviewOutputFormat,
-        RouteOutputFormat, WaiverCommands, WaiverOutputFormat,
+        RouteDetail, RouteOutputFormat, WaiverCommands, WaiverOutputFormat,
     };
 
     #[test]
@@ -472,6 +482,10 @@ mod tests {
             ".docpact/config.yaml",
             "--paths",
             "src/payments/charge.ts,src/payments/refund.ts",
+            "--detail",
+            "full",
+            "--limit",
+            "7",
             "--format",
             "json",
         ])
@@ -485,6 +499,8 @@ mod tests {
                     Some(std::path::Path::new(".docpact/config.yaml"))
                 );
                 assert_eq!(args.paths, "src/payments/charge.ts,src/payments/refund.ts");
+                assert_eq!(args.detail, RouteDetail::Full);
+                assert_eq!(args.limit, Some(7));
                 assert_eq!(args.format, RouteOutputFormat::Json);
             }
             _ => panic!("expected route command"),
