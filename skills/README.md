@@ -59,8 +59,10 @@ Repository-specific or organization-specific skills should live outside the core
 - `coverage-backfill`: turn coverage audit gaps into grouped, prioritized backfill tasks, with explicit handoff to `rule-authoring` for concrete rule drafts.
 - `routing-configuration`: maintain controlled `routing.intents` aliases and workspace routing overrides without expanding route into free-text intent handling.
 - `rule-audit`: inspect rule graph quality using `list-rules`, `coverage`, and `doctor`, then hand refactor work back to `rule-authoring` instead of editing rules inside the audit.
+- `documentation-maintenance`: turn `freshness` signals into stale-doc remediation, review-evidence repair, structure cleanup, or governance escalation without weakening the existing rule graph.
+- `ci-integration`: design, review, and repair GitHub Actions integration around the thin official wrapper and existing CLI semantics without inventing a CI-only parameter model.
 
-Planned next maintainer-facing skills include `ci-integration`, `documentation-maintenance`, and the top-level `docpact-governance` maintainer orchestrator.
+Planned next maintainer-facing skill is the top-level `docpact-governance` maintainer orchestrator.
 
 ## Authoring Guidance
 

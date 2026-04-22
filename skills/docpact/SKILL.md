@@ -128,6 +128,7 @@ Hand off to maintainer-oriented skills when the question becomes:
 - how should we turn uncovered hotspots into backlog? -> `coverage-backfill`
 - how should we maintain routing aliases? -> `routing-configuration`
 - how healthy is the current rule graph? -> `rule-audit`
+- how should we remediate stale docs or invalid review references? -> `documentation-maintenance`
 
 Until a dedicated governance orchestrator exists, route directly to those existing skills rather than trying to keep all maintainer logic in this skill.
 
