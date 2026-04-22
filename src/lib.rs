@@ -10,6 +10,7 @@ pub mod freshness;
 pub mod git;
 pub mod list_rules;
 pub mod metadata;
+pub mod render;
 pub mod reporters;
 pub mod review;
 pub mod route;
@@ -33,6 +34,7 @@ pub fn run(cli: Cli) -> Result<AppExit> {
         Commands::Baseline(args) => baseline::run(args),
         Commands::Waiver(args) => waiver::run(args),
         Commands::Route(args) => route::run(args),
+        Commands::Render(args) => render::run(args),
         Commands::ListRules(args) => list_rules::run(args),
         Commands::Doctor(args) => doctor::run(args),
         Commands::Coverage(args) => coverage::run(args),

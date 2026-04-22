@@ -19,6 +19,7 @@ pub enum Commands {
     Baseline(BaselineArgs),
     Waiver(WaiverArgs),
     Route(RouteArgs),
+    Render(RenderArgs),
     ListRules(ListRulesArgs),
     Doctor(DoctorArgs),
     Coverage(CoverageArgs),
@@ -151,6 +152,26 @@ pub struct RouteArgs {
     pub limit: Option<usize>,
     #[arg(long, value_enum, default_value_t = RouteOutputFormat::Text)]
     pub format: RouteOutputFormat,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct RenderArgs {
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+    #[arg(long, value_enum)]
+    pub view: RenderView,
+    #[arg(long)]
+    pub paths: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub module: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub intent: Vec<String>,
+    #[arg(long, value_parser = parse_positive_usize)]
+    pub limit: Option<usize>,
+    #[arg(long, value_enum, default_value_t = RenderOutputFormat::Text)]
+    pub format: RenderOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -287,6 +308,20 @@ pub enum CoverageOutputFormat {
 pub enum RouteOutputFormat {
     Text,
     Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RenderOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RenderView {
+    CatalogSummary,
+    OwnershipSummary,
+    NavigationSummary,
+    WorkspaceSummary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -517,6 +552,42 @@ mod tests {
                 assert_eq!(args.format, RouteOutputFormat::Json);
             }
             _ => panic!("expected route command"),
+        }
+    }
+
+    #[test]
+    fn parses_render_command() {
+        let cli = Cli::try_parse_from([
+            "docpact",
+            "render",
+            "--root",
+            ".",
+            "--view",
+            "navigation-summary",
+            "--paths",
+            "src/payments/charge.ts",
+            "--module",
+            "src/payments",
+            "--intent",
+            "payments",
+            "--limit",
+            "5",
+            "--format",
+            "json",
+        ])
+        .expect("cli should parse");
+
+        match cli.command {
+            Commands::Render(args) => {
+                assert_eq!(args.root.as_deref(), Some(std::path::Path::new(".")));
+                assert_eq!(args.view, super::RenderView::NavigationSummary);
+                assert_eq!(args.paths.as_deref(), Some("src/payments/charge.ts"));
+                assert_eq!(args.module, vec!["src/payments"]);
+                assert_eq!(args.intent, vec!["payments"]);
+                assert_eq!(args.limit, Some(5));
+                assert_eq!(args.format, super::RenderOutputFormat::Json);
+            }
+            _ => panic!("expected render command"),
         }
     }
 
