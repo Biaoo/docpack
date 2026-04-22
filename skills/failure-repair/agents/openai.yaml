@@ -1,0 +1,4 @@
+interface:
+  display_name: "Failure Repair"
+  short_description: "Guide docpact lint failure repair."
+  default_prompt: "Use $failure-repair to diagnose one docpact finding and recommend the correct repair path."

@@ -45,6 +45,7 @@ Repository-specific or organization-specific skills should live outside the core
 ## Implemented Skills
 
 - `repository-onboarding`: guide first-time repository adoption around `doctor`, `list-rules`, `coverage`, `validate-config --strict`, and baseline-first staged rollout.
+- `failure-repair`: diagnose one lint finding from a structured report and choose the correct repair path across doc edits, review evidence refresh, config repair, or adoption-control escalation.
 
 ## Authoring Guidance
 
