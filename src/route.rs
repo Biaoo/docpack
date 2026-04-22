@@ -8,14 +8,15 @@ use serde::Serialize;
 use crate::AppExit;
 use crate::cli::{RouteArgs, RouteDetail, RouteOutputFormat};
 use crate::config::{
-    LoadedRoutingConfig, load_impact_files, load_routing_configs, normalize_path,
-    resolve_rule_path, root_dir_from_option,
+    CatalogRepo, LoadedCatalogConfig, LoadedRoutingConfig, OwnershipPathAnalysis,
+    analyze_ownership_paths, load_catalog_configs, load_impact_files, load_ownership_configs,
+    load_routing_configs, normalize_path, resolve_rule_path, root_dir_from_option,
 };
 use crate::freshness::{FreshnessItem, RouteFreshnessTarget, execute_route_freshness_with_today};
 use crate::git::get_tracked_paths;
 use crate::rules::{RequiredDocMode, matches_pattern};
 
-pub const ROUTE_SCHEMA_VERSION: &str = "docpact.route.v1";
+pub const ROUTE_SCHEMA_VERSION: &str = "docpact.route.v3";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct RouteReport {
@@ -23,7 +24,8 @@ pub struct RouteReport {
     pub tool_name: String,
     pub tool_version: String,
     pub summary: RouteSummary,
-    pub recommended_docs: Vec<RouteRecommendation>,
+    pub governed_docs: Vec<RouteRecommendation>,
+    pub advisory_docs: Vec<RouteAdvisoryDoc>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -32,7 +34,8 @@ pub struct RouteSummary {
     pub module_input_count: usize,
     pub intent_input_count: usize,
     pub matched_rule_count: usize,
-    pub recommended_doc_count: usize,
+    pub governed_doc_count: usize,
+    pub advisory_doc_count: usize,
     pub freshness_warning_count: usize,
     pub critical_freshness_count: usize,
 }
@@ -42,6 +45,11 @@ pub struct RouteRecommendation {
     pub path: String,
     pub priority: String,
     pub match_reason: RouteMatchReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ownership_context: Option<RouteOwnershipContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_context: Option<RouteRepoContext>,
+    pub tie_break_context: RouteGovernedTieBreak,
     pub score_breakdown: RouteScoreBreakdown,
     pub freshness_level: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +60,21 @@ pub struct RouteRecommendation {
     pub config_sources: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rule_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RouteAdvisoryDoc {
+    pub path: String,
+    pub repo_id: String,
+    pub pointer_types: Vec<String>,
+    pub matched_input_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_repo: Option<String>,
+    pub tie_break_context: RouteAdvisoryTieBreak,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_sources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pointer_sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -70,6 +93,38 @@ pub struct RouteScoreBreakdown {
     pub matched_rule_count: usize,
     pub freshness_penalty: usize,
     pub total_score: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RouteOwnershipContext {
+    pub owner_repos: Vec<String>,
+    pub non_owner_repos: Vec<String>,
+    pub domain_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_patterns: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domain_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RouteRepoContext {
+    pub repo_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub canonical_repos: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RouteGovernedTieBreak {
+    pub ownership_context_present: bool,
+    pub repo_context_present: bool,
+    pub owner_repo_count: usize,
+    pub repo_context_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RouteAdvisoryTieBreak {
+    pub pointer_priority: usize,
+    pub matched_input_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,11 +146,29 @@ struct RecommendationBuilder {
     path: String,
     rule_ids: BTreeSet<String>,
     matched_input_paths: BTreeSet<String>,
+    matched_candidate_paths: BTreeSet<String>,
     matched_trigger_paths: BTreeSet<String>,
     modes: BTreeSet<RequiredDocMode>,
     config_sources: BTreeSet<String>,
     rule_sources: BTreeSet<String>,
     best_specificity_score: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdvisoryDocBuilder {
+    path: String,
+    repo_id: String,
+    canonical_repo: Option<String>,
+    pointer_types: BTreeSet<String>,
+    matched_input_paths: BTreeSet<String>,
+    config_sources: BTreeSet<String>,
+    pointer_sources: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CatalogPathContext {
+    repo_id: String,
+    canonical_repo: Option<String>,
 }
 
 pub fn run(args: RouteArgs) -> Result<AppExit> {
@@ -113,7 +186,19 @@ fn execute_with_today(args: &RouteArgs, today: &str) -> Result<RouteReport> {
     let root_dir = root_dir_from_option(args.root.as_deref())?;
     let loaded_rules = load_impact_files(&root_dir, args.config.as_deref())?;
     let routing_configs = load_routing_configs(&root_dir, args.config.as_deref())?;
+    let catalog_configs = load_catalog_configs(&root_dir, args.config.as_deref())?;
+    let ownership_configs = load_ownership_configs(&root_dir, args.config.as_deref())?;
     let prepared_inputs = prepare_inputs(&root_dir, args, &routing_configs)?;
+    let analyzed_paths = prepared_inputs
+        .resolved_inputs
+        .iter()
+        .flat_map(|input| input.candidates.iter().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let ownership_analysis = analyze_ownership_paths(&analyzed_paths, &ownership_configs);
+    let ownership_index = ownership_index(&ownership_analysis);
+    let catalog_path_index = build_catalog_path_index(&analyzed_paths, &catalog_configs);
 
     let mut matched_rule_keys = BTreeSet::new();
     let mut recommendations = BTreeMap::<String, RecommendationBuilder>::new();
@@ -147,6 +232,7 @@ fn execute_with_today(args: &RouteArgs, today: &str) -> Result<RouteReport> {
                             path,
                             rule_ids: BTreeSet::new(),
                             matched_input_paths: BTreeSet::new(),
+                            matched_candidate_paths: BTreeSet::new(),
                             matched_trigger_paths: BTreeSet::new(),
                             modes: BTreeSet::new(),
                             config_sources: BTreeSet::new(),
@@ -156,6 +242,7 @@ fn execute_with_today(args: &RouteArgs, today: &str) -> Result<RouteReport> {
                     });
                     entry.rule_ids.insert(loaded.rule.id.clone());
                     entry.matched_input_paths.insert(input.original.clone());
+                    entry.matched_candidate_paths.insert(candidate_path.clone());
                     entry
                         .matched_trigger_paths
                         .extend(matched_triggers.iter().cloned());
@@ -187,21 +274,30 @@ fn execute_with_today(args: &RouteArgs, today: &str) -> Result<RouteReport> {
     )?;
 
     let include_sources = args.detail == RouteDetail::Full;
-    let mut recommended_docs = recommendations
+    let mut governed_docs = recommendations
         .into_values()
         .map(|entry| {
             let freshness = freshness_by_path.get(&entry.path);
-            build_recommendation(entry, freshness, include_sources)
+            build_recommendation(
+                entry,
+                freshness,
+                include_sources,
+                &ownership_index,
+                &catalog_path_index,
+            )
         })
         .collect::<Vec<_>>();
+    let mut advisory_docs =
+        build_advisory_docs(&prepared_inputs, &catalog_configs, include_sources);
 
-    recommended_docs.sort_by(compare_recommendations);
+    governed_docs.sort_by(compare_recommendations);
+    advisory_docs.sort_by(compare_advisory_docs);
 
-    let freshness_warning_count = recommended_docs
+    let freshness_warning_count = governed_docs
         .iter()
         .filter(|item| item.freshness_level != "ok" || !item.review_reference_problems.is_empty())
         .count();
-    let critical_freshness_count = recommended_docs
+    let critical_freshness_count = governed_docs
         .iter()
         .filter(|item| item.freshness_level == "critical")
         .count();
@@ -215,11 +311,13 @@ fn execute_with_today(args: &RouteArgs, today: &str) -> Result<RouteReport> {
             module_input_count: prepared_inputs.module_count,
             intent_input_count: prepared_inputs.intent_count,
             matched_rule_count: matched_rule_keys.len(),
-            recommended_doc_count: recommended_docs.len(),
+            governed_doc_count: governed_docs.len(),
+            advisory_doc_count: advisory_docs.len(),
             freshness_warning_count,
             critical_freshness_count,
         },
-        recommended_docs,
+        governed_docs,
+        advisory_docs,
     })
 }
 
@@ -227,6 +325,8 @@ fn build_recommendation(
     entry: RecommendationBuilder,
     freshness: Option<&FreshnessItem>,
     include_sources: bool,
+    ownership_index: &BTreeMap<String, OwnershipPathAnalysis>,
+    catalog_path_index: &BTreeMap<String, CatalogPathContext>,
 ) -> RouteRecommendation {
     let mode_score = entry
         .modes
@@ -250,6 +350,21 @@ fn build_recommendation(
         .map(|item| item.review_reference_problems.clone())
         .unwrap_or_default();
     let freshness_warning = build_freshness_warning(freshness);
+    let ownership_context =
+        build_governed_ownership_context(&entry.matched_candidate_paths, ownership_index, include_sources);
+    let repo_context = build_governed_repo_context(&entry.matched_candidate_paths, catalog_path_index);
+    let tie_break_context = RouteGovernedTieBreak {
+        ownership_context_present: ownership_context.is_some(),
+        repo_context_present: repo_context.is_some(),
+        owner_repo_count: ownership_context
+            .as_ref()
+            .map(|context| context.owner_repos.len())
+            .unwrap_or(0),
+        repo_context_count: repo_context
+            .as_ref()
+            .map(|context| context.repo_ids.len())
+            .unwrap_or(0),
+    };
 
     RouteRecommendation {
         path: entry.path,
@@ -264,6 +379,9 @@ fn build_recommendation(
                 .map(|mode| mode.as_str().to_string())
                 .collect(),
         },
+        ownership_context,
+        repo_context,
+        tie_break_context,
         score_breakdown: RouteScoreBreakdown {
             mode_score,
             specificity_score: entry.best_specificity_score,
@@ -317,6 +435,53 @@ fn compare_recommendations(left: &RouteRecommendation, right: &RouteRecommendati
                 .matched_rule_count
                 .cmp(&left.score_breakdown.matched_rule_count)
         })
+        .then_with(|| {
+            right
+                .tie_break_context
+                .ownership_context_present
+                .cmp(&left.tie_break_context.ownership_context_present)
+        })
+        .then_with(|| {
+            right
+                .tie_break_context
+                .repo_context_present
+                .cmp(&left.tie_break_context.repo_context_present)
+        })
+        .then_with(|| {
+            left.tie_break_context
+                .owner_repo_count
+                .cmp(&right.tie_break_context.owner_repo_count)
+        })
+        .then_with(|| {
+            left.tie_break_context
+                .repo_context_count
+                .cmp(&right.tie_break_context.repo_context_count)
+        })
+        .then_with(|| left.path.cmp(&right.path))
+}
+
+fn advisory_pointer_priority(pointer_type: &str) -> usize {
+    match pointer_type {
+        "entryDoc" => 40,
+        "branchPolicyDoc" => 30,
+        "workflowDocs" => 20,
+        "integrationDocs" => 10,
+        _ => 0,
+    }
+}
+
+fn compare_advisory_docs(left: &RouteAdvisoryDoc, right: &RouteAdvisoryDoc) -> Ordering {
+    right
+        .tie_break_context
+        .pointer_priority
+        .cmp(&left.tie_break_context.pointer_priority)
+        .then_with(|| {
+            right
+                .tie_break_context
+                .matched_input_count
+                .cmp(&left.tie_break_context.matched_input_count)
+        })
+        .then_with(|| left.repo_id.cmp(&right.repo_id))
         .then_with(|| left.path.cmp(&right.path))
 }
 
@@ -545,6 +710,259 @@ fn build_freshness_warning(item: Option<&FreshnessItem>) -> Option<String> {
     }
 }
 
+fn build_advisory_docs(
+    prepared_inputs: &PreparedInputs,
+    catalog_configs: &[LoadedCatalogConfig],
+    include_sources: bool,
+) -> Vec<RouteAdvisoryDoc> {
+    let mut builders = BTreeMap::<String, AdvisoryDocBuilder>::new();
+
+    for input in &prepared_inputs.resolved_inputs {
+        for candidate_path in &input.candidates {
+            for loaded in catalog_configs {
+                for repo in &loaded.catalog.repos {
+                    let repo_root = resolve_catalog_repo_root(&loaded.base_dir, &repo.path);
+                    if !matches_catalog_repo_scope(candidate_path, &repo_root) {
+                        continue;
+                    }
+
+                    add_catalog_pointer(
+                        &mut builders,
+                        loaded,
+                        repo,
+                        &repo_root,
+                        repo.entry_doc.as_deref(),
+                        "entryDoc",
+                        &input.original,
+                    );
+                    add_catalog_pointer(
+                        &mut builders,
+                        loaded,
+                        repo,
+                        &repo_root,
+                        repo.branch_policy_doc.as_deref(),
+                        "branchPolicyDoc",
+                        &input.original,
+                    );
+                    for path in &repo.workflow_docs {
+                        add_catalog_pointer(
+                            &mut builders,
+                            loaded,
+                            repo,
+                            &repo_root,
+                            Some(path.as_str()),
+                            "workflowDocs",
+                            &input.original,
+                        );
+                    }
+                    for path in &repo.integration_docs {
+                        add_catalog_pointer(
+                            &mut builders,
+                            loaded,
+                            repo,
+                            &repo_root,
+                            Some(path.as_str()),
+                            "integrationDocs",
+                            &input.original,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    builders
+        .into_values()
+        .map(|builder| {
+            let pointer_priority = builder
+                .pointer_types
+                .iter()
+                .map(|pointer| advisory_pointer_priority(pointer))
+                .max()
+                .unwrap_or_default();
+            let matched_input_count = builder.matched_input_paths.len();
+
+            RouteAdvisoryDoc {
+                path: builder.path,
+                repo_id: builder.repo_id,
+                pointer_types: builder.pointer_types.into_iter().collect(),
+                matched_input_paths: builder.matched_input_paths.into_iter().collect(),
+                canonical_repo: builder.canonical_repo,
+                tie_break_context: RouteAdvisoryTieBreak {
+                    pointer_priority,
+                    matched_input_count,
+                },
+                config_sources: if include_sources {
+                    builder.config_sources.into_iter().collect()
+                } else {
+                    Vec::new()
+                },
+                pointer_sources: if include_sources {
+                    builder.pointer_sources.into_iter().collect()
+                } else {
+                    Vec::new()
+                },
+            }
+        })
+        .collect()
+}
+
+fn add_catalog_pointer(
+    builders: &mut BTreeMap<String, AdvisoryDocBuilder>,
+    loaded: &LoadedCatalogConfig,
+    repo: &CatalogRepo,
+    repo_root: &str,
+    pointer: Option<&str>,
+    pointer_type: &str,
+    matched_input: &str,
+) {
+    let Some(pointer) = pointer else {
+        return;
+    };
+
+    let path = resolve_catalog_doc_pointer(repo_root, pointer);
+    let entry = builders
+        .entry(path.clone())
+        .or_insert_with(|| AdvisoryDocBuilder {
+            path,
+            repo_id: repo.id.clone(),
+            canonical_repo: repo.canonical_repo.clone(),
+            pointer_types: BTreeSet::new(),
+            matched_input_paths: BTreeSet::new(),
+            config_sources: BTreeSet::new(),
+            pointer_sources: BTreeSet::new(),
+        });
+    entry.pointer_types.insert(pointer_type.to_string());
+    entry.matched_input_paths.insert(matched_input.to_string());
+    entry.config_sources.insert(loaded.source.clone());
+    entry.pointer_sources.insert(format!(
+        "{}#catalog.repos.{}.{}",
+        loaded.source, repo.id, pointer_type
+    ));
+}
+
+fn resolve_catalog_repo_root(base_dir: &str, repo_path: &str) -> String {
+    if repo_path == "." {
+        normalize_path(base_dir)
+    } else {
+        resolve_rule_path(base_dir, repo_path)
+    }
+}
+
+fn resolve_catalog_doc_pointer(repo_root: &str, pointer: &str) -> String {
+    if repo_root.is_empty() {
+        normalize_path(pointer)
+    } else {
+        normalize_path(&format!("{repo_root}/{pointer}"))
+    }
+}
+
+fn matches_catalog_repo_scope(candidate_path: &str, repo_root: &str) -> bool {
+    repo_root.is_empty()
+        || candidate_path == repo_root
+        || candidate_path
+            .strip_prefix(repo_root)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn ownership_index(
+    analysis: &crate::config::OwnershipAnalysis,
+) -> BTreeMap<String, OwnershipPathAnalysis> {
+    analysis
+        .paths
+        .iter()
+        .cloned()
+        .map(|item| (item.path.clone(), item))
+        .collect()
+}
+
+fn build_catalog_path_index(
+    candidate_paths: &[String],
+    catalog_configs: &[LoadedCatalogConfig],
+) -> BTreeMap<String, CatalogPathContext> {
+    let mut index = BTreeMap::new();
+
+    for candidate_path in candidate_paths {
+        for loaded in catalog_configs {
+            for repo in &loaded.catalog.repos {
+                let repo_root = resolve_catalog_repo_root(&loaded.base_dir, &repo.path);
+                if matches_catalog_repo_scope(candidate_path, &repo_root) {
+                    index.entry(candidate_path.clone()).or_insert_with(|| CatalogPathContext {
+                        repo_id: repo.id.clone(),
+                        canonical_repo: repo.canonical_repo.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    index
+}
+
+fn build_governed_ownership_context(
+    candidate_paths: &BTreeSet<String>,
+    ownership_index: &BTreeMap<String, OwnershipPathAnalysis>,
+    include_sources: bool,
+) -> Option<RouteOwnershipContext> {
+    let mut owner_repos = BTreeSet::new();
+    let mut non_owner_repos = BTreeSet::new();
+    let mut domain_ids = BTreeSet::new();
+    let mut matched_patterns = BTreeSet::new();
+    let mut domain_sources = BTreeSet::new();
+
+    for path in candidate_paths {
+        let Some(analysis) = ownership_index.get(path) else {
+            continue;
+        };
+        owner_repos.insert(analysis.selected.owner_repo.clone());
+        domain_ids.insert(analysis.selected.domain_id.clone());
+        matched_patterns.insert(analysis.selected.matched_include.clone());
+        non_owner_repos.extend(analysis.selected.non_owner_repos.iter().cloned());
+        if include_sources {
+            domain_sources.insert(analysis.selected.source.clone());
+        }
+    }
+
+    if owner_repos.is_empty() && domain_ids.is_empty() {
+        return None;
+    }
+
+    Some(RouteOwnershipContext {
+        owner_repos: owner_repos.into_iter().collect(),
+        non_owner_repos: non_owner_repos.into_iter().collect(),
+        domain_ids: domain_ids.into_iter().collect(),
+        matched_patterns: matched_patterns.into_iter().collect(),
+        domain_sources: domain_sources.into_iter().collect(),
+    })
+}
+
+fn build_governed_repo_context(
+    candidate_paths: &BTreeSet<String>,
+    catalog_path_index: &BTreeMap<String, CatalogPathContext>,
+) -> Option<RouteRepoContext> {
+    let mut repo_ids = BTreeSet::new();
+    let mut canonical_repos = BTreeSet::new();
+
+    for path in candidate_paths {
+        let Some(context) = catalog_path_index.get(path) else {
+            continue;
+        };
+        repo_ids.insert(context.repo_id.clone());
+        if let Some(canonical_repo) = &context.canonical_repo {
+            canonical_repos.insert(canonical_repo.clone());
+        }
+    }
+
+    if repo_ids.is_empty() {
+        return None;
+    }
+
+    Some(RouteRepoContext {
+        repo_ids: repo_ids.into_iter().collect(),
+        canonical_repos: canonical_repos.into_iter().collect(),
+    })
+}
+
 fn today_date_string() -> Result<String> {
     let output = std::process::Command::new("date")
         .args(["+%F"])
@@ -580,92 +998,209 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
     let mut output = String::new();
     output.push_str("Docpact route recommendations:\n");
     output.push_str(&format!(
-        "Summary: input_paths={} modules={} intents={} matched_rules={} recommended_docs={} freshness_warnings={} critical_freshness={}\n",
+        "Summary: input_paths={} modules={} intents={} matched_rules={} governed_docs={} advisory_docs={} freshness_warnings={} critical_freshness={}\n",
         report.summary.input_path_count,
         report.summary.module_input_count,
         report.summary.intent_input_count,
         report.summary.matched_rule_count,
-        report.summary.recommended_doc_count,
+        report.summary.governed_doc_count,
+        report.summary.advisory_doc_count,
         report.summary.freshness_warning_count,
         report.summary.critical_freshness_count,
     ));
 
-    let displayed = limit
-        .map(|value| value.min(report.recommended_docs.len()))
-        .unwrap_or(report.recommended_docs.len());
-    if displayed < report.recommended_docs.len() {
+    let governed_displayed = limit
+        .map(|value| value.min(report.governed_docs.len()))
+        .unwrap_or(report.governed_docs.len());
+    if governed_displayed < report.governed_docs.len() {
         output.push_str(&format!(
-            "Recommended docs (showing {} of {}):\n",
-            displayed,
-            report.recommended_docs.len()
+            "Governed docs (showing {} of {}):\n",
+            governed_displayed,
+            report.governed_docs.len()
         ));
     } else {
-        output.push_str("Recommended docs:\n");
+        output.push_str("Governed docs:\n");
     }
 
-    if report.recommended_docs.is_empty() {
+    if report.governed_docs.is_empty() {
+        output.push_str("- none\n");
+    } else {
+        for recommendation in report.governed_docs.iter().take(governed_displayed) {
+            output.push_str(&format!(
+                "- path={} priority={} freshness={} rules={} inputs={}\n",
+                recommendation.path,
+                recommendation.priority,
+                recommendation.freshness_level,
+                recommendation.match_reason.rule_ids.join(","),
+                recommendation.match_reason.matched_input_paths.join(","),
+            ));
+
+            if detail == RouteDetail::Compact {
+                if let Some(context) = &recommendation.ownership_context {
+                    output.push_str(&format!(
+                        "  ownership owners={} non_owners={} domains={}\n",
+                        join_or_dash(&context.owner_repos),
+                        join_or_dash(&context.non_owner_repos),
+                        join_or_dash(&context.domain_ids),
+                    ));
+                }
+                if let Some(context) = &recommendation.repo_context {
+                    output.push_str(&format!(
+                        "  repo_context repos={} canonical_repos={}\n",
+                        join_or_dash(&context.repo_ids),
+                        join_or_dash(&context.canonical_repos),
+                    ));
+                }
+                if let Some(warning) = &recommendation.freshness_warning {
+                    output.push_str(&format!("  freshness_warning={warning}\n"));
+                }
+                continue;
+            }
+
+            output.push_str(&format!(
+                "  triggers={}\n",
+                recommendation.match_reason.matched_trigger_paths.join(",")
+            ));
+            output.push_str(&format!(
+                "  modes={}\n",
+                recommendation.match_reason.modes.join(",")
+            ));
+            output.push_str(&format!(
+                "  score mode={} specificity={} matched_inputs={} matched_rules={} freshness_penalty={} total={}\n",
+                recommendation.score_breakdown.mode_score,
+                recommendation.score_breakdown.specificity_score,
+                recommendation.score_breakdown.matched_input_count,
+                recommendation.score_breakdown.matched_rule_count,
+                recommendation.score_breakdown.freshness_penalty,
+                recommendation.score_breakdown.total_score,
+            ));
+            if let Some(warning) = &recommendation.freshness_warning {
+                output.push_str(&format!("  freshness_warning={warning}\n"));
+            }
+            if !recommendation.review_reference_problems.is_empty() {
+                output.push_str(&format!(
+                    "  review_reference_problems={}\n",
+                    recommendation.review_reference_problems.join(",")
+                ));
+            }
+            if let Some(context) = &recommendation.ownership_context {
+                output.push_str(&format!(
+                    "  ownership owners={} non_owners={} domains={}\n",
+                    join_or_dash(&context.owner_repos),
+                    join_or_dash(&context.non_owner_repos),
+                    join_or_dash(&context.domain_ids),
+                ));
+                if !context.matched_patterns.is_empty() {
+                    output.push_str(&format!(
+                        "  ownership_patterns={}\n",
+                        context.matched_patterns.join(",")
+                    ));
+                }
+                if !context.domain_sources.is_empty() {
+                    output.push_str(&format!(
+                        "  ownership_sources={}\n",
+                        context.domain_sources.join(",")
+                    ));
+                }
+            }
+            if let Some(context) = &recommendation.repo_context {
+                output.push_str(&format!(
+                    "  repo_context repos={} canonical_repos={}\n",
+                    join_or_dash(&context.repo_ids),
+                    join_or_dash(&context.canonical_repos),
+                ));
+            }
+            output.push_str(&format!(
+                "  tie_break ownership_context={} repo_context={} owner_repo_count={} repo_context_count={}\n",
+                recommendation.tie_break_context.ownership_context_present,
+                recommendation.tie_break_context.repo_context_present,
+                recommendation.tie_break_context.owner_repo_count,
+                recommendation.tie_break_context.repo_context_count,
+            ));
+            if !recommendation.config_sources.is_empty() {
+                output.push_str(&format!(
+                    "  config_sources={}\n",
+                    recommendation.config_sources.join(",")
+                ));
+            }
+            if !recommendation.rule_sources.is_empty() {
+                output.push_str(&format!(
+                    "  rule_sources={}\n",
+                    recommendation.rule_sources.join(",")
+                ));
+            }
+        }
+    }
+
+    let advisory_displayed = limit
+        .map(|value| value.min(report.advisory_docs.len()))
+        .unwrap_or(report.advisory_docs.len());
+    if advisory_displayed < report.advisory_docs.len() {
+        output.push_str(&format!(
+            "Advisory docs (showing {} of {}):\n",
+            advisory_displayed,
+            report.advisory_docs.len()
+        ));
+    } else {
+        output.push_str("Advisory docs:\n");
+    }
+
+    if report.advisory_docs.is_empty() {
         output.push_str("- none\n");
         return output;
     }
 
-    for recommendation in report.recommended_docs.iter().take(displayed) {
+    for advisory in report.advisory_docs.iter().take(advisory_displayed) {
         output.push_str(&format!(
-            "- path={} priority={} freshness={} rules={} inputs={}\n",
-            recommendation.path,
-            recommendation.priority,
-            recommendation.freshness_level,
-            recommendation.match_reason.rule_ids.join(","),
-            recommendation.match_reason.matched_input_paths.join(","),
+            "- path={} repo={} pointers={} inputs={}\n",
+            advisory.path,
+            advisory.repo_id,
+            advisory.pointer_types.join(","),
+            advisory.matched_input_paths.join(","),
         ));
 
         if detail == RouteDetail::Compact {
-            if let Some(warning) = &recommendation.freshness_warning {
-                output.push_str(&format!("  freshness_warning={warning}\n"));
-            }
+            output.push_str(&format!(
+                "  why_read_first={} canonical_repo={}\n",
+                advisory.pointer_types.join(","),
+                advisory.canonical_repo.as_deref().unwrap_or("-"),
+            ));
             continue;
         }
 
         output.push_str(&format!(
-            "  triggers={}\n",
-            recommendation.match_reason.matched_trigger_paths.join(",")
+            "  why_read_first={} canonical_repo={}\n",
+            advisory.pointer_types.join(","),
+            advisory.canonical_repo.as_deref().unwrap_or("-"),
         ));
         output.push_str(&format!(
-            "  modes={}\n",
-            recommendation.match_reason.modes.join(",")
+            "  tie_break pointer_priority={} matched_inputs={}\n",
+            advisory.tie_break_context.pointer_priority,
+            advisory.tie_break_context.matched_input_count,
         ));
-        output.push_str(&format!(
-            "  score mode={} specificity={} matched_inputs={} matched_rules={} freshness_penalty={} total={}\n",
-            recommendation.score_breakdown.mode_score,
-            recommendation.score_breakdown.specificity_score,
-            recommendation.score_breakdown.matched_input_count,
-            recommendation.score_breakdown.matched_rule_count,
-            recommendation.score_breakdown.freshness_penalty,
-            recommendation.score_breakdown.total_score,
-        ));
-        if let Some(warning) = &recommendation.freshness_warning {
-            output.push_str(&format!("  freshness_warning={warning}\n"));
-        }
-        if !recommendation.review_reference_problems.is_empty() {
-            output.push_str(&format!(
-                "  review_reference_problems={}\n",
-                recommendation.review_reference_problems.join(",")
-            ));
-        }
-        if !recommendation.config_sources.is_empty() {
+        if !advisory.config_sources.is_empty() {
             output.push_str(&format!(
                 "  config_sources={}\n",
-                recommendation.config_sources.join(",")
+                advisory.config_sources.join(",")
             ));
         }
-        if !recommendation.rule_sources.is_empty() {
+        if !advisory.pointer_sources.is_empty() {
             output.push_str(&format!(
-                "  rule_sources={}\n",
-                recommendation.rule_sources.join(",")
+                "  pointer_sources={}\n",
+                advisory.pointer_sources.join(",")
             ));
         }
     }
 
     output
+}
+
+fn join_or_dash(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".to_string()
+    } else {
+        values.join(",")
+    }
 }
 
 #[cfg(test)]
@@ -784,10 +1319,11 @@ rules:
         assert_eq!(report.schema_version, ROUTE_SCHEMA_VERSION);
         assert_eq!(report.summary.input_path_count, 1);
         assert_eq!(report.summary.matched_rule_count, 1);
-        assert_eq!(report.summary.recommended_doc_count, 1);
+        assert_eq!(report.summary.governed_doc_count, 1);
+        assert_eq!(report.summary.advisory_doc_count, 0);
         assert_eq!(report.summary.freshness_warning_count, 1);
         assert_eq!(report.summary.critical_freshness_count, 0);
-        let recommendation = &report.recommended_docs[0];
+        let recommendation = &report.governed_docs[0];
         assert_eq!(recommendation.path, "docs/payments.md");
         assert_eq!(recommendation.priority, "high");
         assert_eq!(recommendation.match_reason.rule_ids, vec!["payments-docs"]);
@@ -814,6 +1350,185 @@ rules:
         );
         assert!(recommendation.config_sources.is_empty());
         assert!(recommendation.rule_sources.is_empty());
+    }
+
+    #[test]
+    fn route_surfaces_ownership_and_repo_context_for_governed_docs() {
+        let root = temp_dir("docpact-route-ownership-context");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/payments")).expect("payments dir");
+        fs::create_dir_all(root.join("docs")).expect("docs dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+catalog:
+  repos:
+    - id: demo
+      path: .
+      canonicalRepo: Biaoo/docpack
+      entryDoc: AGENTS.md
+ownership:
+  domains:
+    - id: payments
+      paths:
+        include:
+          - src/payments/**
+      ownerRepo: demo
+      nonOwnerRepos:
+        - app-shell
+repo:
+  id: demo
+rules:
+  - id: payments-docs
+    scope: repo
+    repo: demo
+    triggers:
+      - path: src/payments/**
+        kind: code
+    requiredDocs:
+      - path: docs/payments.md
+        mode: review_or_update
+    reason: Keep payments docs aligned.
+"#,
+        )
+        .expect("config should be written");
+        fs::write(
+            root.join("src/payments/charge.ts"),
+            "export const charge = 1;\n",
+        )
+        .expect("source file should be written");
+        fs::write(root.join("docs/payments.md"), "# Payments\n").expect("doc file");
+        git(&root, &["add", "."]);
+
+        let mut args = base_args(root.clone(), "src/payments/charge.ts");
+        args.detail = RouteDetail::Full;
+        let report = execute_with_today(&args, "2026-04-22").expect("route report");
+        let recommendation = &report.governed_docs[0];
+
+        assert_eq!(
+            recommendation.ownership_context.as_ref().map(|context| &context.owner_repos),
+            Some(&vec!["demo".to_string()])
+        );
+        assert_eq!(
+            recommendation
+                .ownership_context
+                .as_ref()
+                .map(|context| &context.non_owner_repos),
+            Some(&vec!["app-shell".to_string()])
+        );
+        assert_eq!(
+            recommendation
+                .ownership_context
+                .as_ref()
+                .map(|context| &context.domain_ids),
+            Some(&vec!["payments".to_string()])
+        );
+        assert_eq!(
+            recommendation
+                .repo_context
+                .as_ref()
+                .map(|context| &context.repo_ids),
+            Some(&vec!["demo".to_string()])
+        );
+        assert_eq!(
+            recommendation
+                .repo_context
+                .as_ref()
+                .map(|context| &context.canonical_repos),
+            Some(&vec!["Biaoo/docpack".to_string()])
+        );
+
+        let compact = render_text_report(&report, RouteDetail::Compact, None);
+        assert!(compact.contains("ownership owners=demo non_owners=app-shell domains=payments"));
+        assert!(compact.contains("repo_context repos=demo canonical_repos=Biaoo/docpack"));
+
+        let full = render_text_report(&report, RouteDetail::Full, None);
+        assert!(full.contains("ownership_patterns=src/payments/**"));
+        assert!(full.contains("ownership_sources=.docpact/config.yaml"));
+        assert!(full.contains("tie_break ownership_context=true repo_context=true"));
+    }
+
+    #[test]
+    fn route_reports_advisory_docs_from_catalog_pointers() {
+        let root = temp_dir("docpact-route-advisory");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/payments")).expect("payments dir");
+        fs::create_dir_all(root.join("docs")).expect("docs dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+catalog:
+  repos:
+    - id: demo
+      path: .
+      canonicalRepo: Biaoo/docpack
+      entryDoc: AGENTS.md
+      branchPolicyDoc: docs/branch-policy.md
+      workflowDocs:
+        - docs/workflow.md
+      integrationDocs:
+        - docs/integration.md
+repo:
+  id: demo
+rules: []
+"#,
+        )
+        .expect("config should be written");
+        fs::write(
+            root.join("src/payments/charge.ts"),
+            "export const charge = 1;\n",
+        )
+        .expect("source file should be written");
+        git(&root, &["add", "."]);
+
+        let mut args = base_args(root.clone(), "src/payments/charge.ts");
+        args.detail = RouteDetail::Full;
+        let report = execute_with_today(&args, "2026-04-22").expect("route report");
+
+        assert_eq!(report.summary.governed_doc_count, 0);
+        assert_eq!(report.summary.advisory_doc_count, 4);
+        assert!(report.governed_docs.is_empty());
+        let advisory_paths = report
+            .advisory_docs
+            .iter()
+            .map(|item| item.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            advisory_paths,
+            vec![
+                "AGENTS.md",
+                "docs/branch-policy.md",
+                "docs/workflow.md",
+                "docs/integration.md",
+            ]
+        );
+        assert_eq!(report.advisory_docs[0].pointer_types, vec!["entryDoc"]);
+        assert_eq!(
+            report.advisory_docs[0].matched_input_paths,
+            vec!["src/payments/charge.ts"]
+        );
+        assert_eq!(
+            report.advisory_docs[0].canonical_repo.as_deref(),
+            Some("Biaoo/docpack")
+        );
+        assert_eq!(report.advisory_docs[0].tie_break_context.pointer_priority, 40);
+        assert_eq!(report.advisory_docs[0].tie_break_context.matched_input_count, 1);
+        assert_eq!(
+            report.advisory_docs[0].pointer_sources,
+            vec![".docpact/config.yaml#catalog.repos.demo.entryDoc".to_string()]
+        );
+
+        let rendered = render_text_report(&report, RouteDetail::Full, Some(1));
+        assert!(rendered.contains("why_read_first=entryDoc canonical_repo=Biaoo/docpack"));
+        assert!(rendered.contains("pointer_sources=.docpact/config.yaml#catalog.repos.demo.entryDoc"));
     }
 
     #[test]
@@ -860,11 +1575,12 @@ rules:
 
         assert_eq!(report.summary.input_path_count, 1);
         assert_eq!(report.summary.matched_rule_count, 1);
-        assert_eq!(report.summary.recommended_doc_count, 1);
-        assert_eq!(report.recommended_docs[0].path, "docs/auth.md");
-        assert_eq!(report.recommended_docs[0].priority, "medium");
+        assert_eq!(report.summary.governed_doc_count, 1);
+        assert_eq!(report.summary.advisory_doc_count, 0);
+        assert_eq!(report.governed_docs[0].path, "docs/auth.md");
+        assert_eq!(report.governed_docs[0].priority, "medium");
         assert_eq!(
-            report.recommended_docs[0].match_reason.matched_input_paths,
+            report.governed_docs[0].match_reason.matched_input_paths,
             vec!["src/auth/**"]
         );
     }
@@ -915,9 +1631,10 @@ rules:
         assert_eq!(report.summary.input_path_count, 0);
         assert_eq!(report.summary.module_input_count, 1);
         assert_eq!(report.summary.intent_input_count, 0);
-        assert_eq!(report.summary.recommended_doc_count, 1);
+        assert_eq!(report.summary.governed_doc_count, 1);
+        assert_eq!(report.summary.advisory_doc_count, 0);
         assert_eq!(
-            report.recommended_docs[0].match_reason.matched_input_paths,
+            report.governed_docs[0].match_reason.matched_input_paths,
             vec!["module:src/payments"]
         );
     }
@@ -969,9 +1686,10 @@ rules:
         assert_eq!(report.summary.input_path_count, 0);
         assert_eq!(report.summary.module_input_count, 0);
         assert_eq!(report.summary.intent_input_count, 1);
-        assert_eq!(report.summary.recommended_doc_count, 1);
+        assert_eq!(report.summary.governed_doc_count, 1);
+        assert_eq!(report.summary.advisory_doc_count, 0);
         assert_eq!(
-            report.recommended_docs[0].match_reason.matched_input_paths,
+            report.governed_docs[0].match_reason.matched_input_paths,
             vec!["intent:auth"]
         );
     }
@@ -1043,8 +1761,10 @@ rules:
 
         assert_eq!(report.summary.input_path_count, 1);
         assert_eq!(report.summary.matched_rule_count, 0);
-        assert_eq!(report.summary.recommended_doc_count, 0);
-        assert!(report.recommended_docs.is_empty());
+        assert_eq!(report.summary.governed_doc_count, 0);
+        assert_eq!(report.summary.advisory_doc_count, 0);
+        assert!(report.governed_docs.is_empty());
+        assert!(report.advisory_docs.is_empty());
     }
 
     #[test]
@@ -1113,7 +1833,7 @@ rules:
         .expect("route report should execute");
 
         let ordered_paths = report
-            .recommended_docs
+            .governed_docs
             .iter()
             .map(|item| item.path.as_str())
             .collect::<Vec<_>>();
@@ -1121,9 +1841,82 @@ rules:
             ordered_paths,
             vec!["docs/exact.md", "docs/meta.md", "docs/broad.md"]
         );
-        assert_eq!(report.recommended_docs[0].priority, "high");
-        assert_eq!(report.recommended_docs[1].priority, "high");
-        assert_eq!(report.recommended_docs[2].priority, "medium");
+        assert_eq!(report.governed_docs[0].priority, "high");
+        assert_eq!(report.governed_docs[1].priority, "high");
+        assert_eq!(report.governed_docs[2].priority, "medium");
+    }
+
+    #[test]
+    fn route_ranking_prefers_ownership_context_before_path_tie_break() {
+        let root = temp_dir("docpact-route-ownership-ranking");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("repo-a/src")).expect("repo-a dir");
+        fs::create_dir_all(root.join("repo-b/src")).expect("repo-b dir");
+        fs::create_dir_all(root.join("docs")).expect("docs dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+catalog:
+  repos:
+    - id: repo-a
+      path: repo-a
+ownership:
+  domains:
+    - id: owned-domain
+      paths:
+        include:
+          - repo-a/src/**
+      ownerRepo: repo-a
+repo:
+  id: workspace
+rules:
+  - id: owned-doc
+    scope: repo
+    repo: workspace
+    triggers:
+      - path: repo-a/src/**
+        kind: code
+    requiredDocs:
+      - path: docs/z-owned.md
+        mode: review_or_update
+    reason: owned
+  - id: unowned-doc
+    scope: repo
+    repo: workspace
+    triggers:
+      - path: repo-b/src/**
+        kind: code
+    requiredDocs:
+      - path: docs/a-unowned.md
+        mode: review_or_update
+    reason: unowned
+"#,
+        )
+        .expect("config should be written");
+        fs::write(root.join("repo-a/src/one.ts"), "export const one = 1;\n").expect("repo-a file");
+        fs::write(root.join("repo-b/src/two.ts"), "export const two = 1;\n").expect("repo-b file");
+        fs::write(root.join("docs/z-owned.md"), "# Owned\n").expect("owned doc");
+        fs::write(root.join("docs/a-unowned.md"), "# Unowned\n").expect("unowned doc");
+        git(&root, &["add", "."]);
+
+        let report = execute_with_today(
+            &base_args(root.clone(), "repo-a/src/**,repo-b/src/**"),
+            "2026-04-22",
+        )
+        .expect("route report should execute");
+
+        let ordered_paths = report
+            .governed_docs
+            .iter()
+            .map(|item| item.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ordered_paths, vec!["docs/z-owned.md", "docs/a-unowned.md"]);
+        assert!(report.governed_docs[0].ownership_context.is_some());
+        assert!(report.governed_docs[1].ownership_context.is_none());
     }
 
     #[test]
@@ -1163,13 +1956,15 @@ rules:
         let mut args = base_args(root.clone(), "src/api/client.ts");
         args.detail = RouteDetail::Full;
         let report = execute_with_today(&args, "2026-04-22").expect("route report should execute");
-        let recommendation = &report.recommended_docs[0];
+        let recommendation = &report.governed_docs[0];
         assert_eq!(recommendation.config_sources, vec![".docpact/config.yaml"]);
         assert_eq!(recommendation.rule_sources, vec![".docpact/config.yaml"]);
 
         let rendered = render_text_report(&report, RouteDetail::Full, Some(1));
         assert!(rendered.contains("priority="));
         assert!(rendered.contains("freshness="));
+        assert!(rendered.contains("Governed docs:"));
+        assert!(rendered.contains("Advisory docs:"));
         assert!(rendered.contains("triggers=src/api/**"));
         assert!(rendered.contains("score mode="));
         assert!(rendered.contains("freshness_penalty="));
@@ -1228,8 +2023,59 @@ rules:
         )
         .expect("route report should execute");
         let rendered = render_text_report(&report, RouteDetail::Compact, Some(1));
-        assert!(rendered.contains("showing 1 of 2"));
+        assert!(rendered.contains("Governed docs (showing 1 of 2)"));
         assert!(rendered.contains("path=docs/a.md") || rendered.contains("path=docs/b.md"));
+    }
+
+    #[test]
+    fn route_text_output_splits_governed_and_advisory_sections() {
+        let root = temp_dir("docpact-route-split-text");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/api")).expect("api dir");
+        fs::create_dir_all(root.join("docs")).expect("docs dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+catalog:
+  repos:
+    - id: demo
+      path: .
+      entryDoc: AGENTS.md
+repo:
+  id: demo
+rules:
+  - id: api-docs
+    scope: repo
+    repo: demo
+    triggers:
+      - path: src/api/**
+        kind: code
+    requiredDocs:
+      - path: docs/api.md
+        mode: review_or_update
+    reason: api
+"#,
+        )
+        .expect("config should be written");
+        fs::write(root.join("src/api/client.ts"), "export const client = 1;\n")
+            .expect("source file should be written");
+        git(&root, &["add", "."]);
+
+        let report =
+            execute_with_today(&base_args(root.clone(), "src/api/client.ts"), "2026-04-22")
+                .expect("route report should execute");
+        let rendered = render_text_report(&report, RouteDetail::Compact, None);
+
+        assert!(rendered.contains("governed_docs=1"));
+        assert!(rendered.contains("advisory_docs=1"));
+        assert!(rendered.contains("Governed docs:"));
+        assert!(rendered.contains("Advisory docs:"));
+        assert!(rendered.contains("path=docs/api.md"));
+        assert!(rendered.contains("path=AGENTS.md"));
     }
 
     #[test]
@@ -1302,7 +2148,7 @@ rules:
             execute_with_today(&base_args(root.clone(), "src/api/client.ts"), "2026-04-22")
                 .expect("route report should execute");
         let ordered_paths = report
-            .recommended_docs
+            .governed_docs
             .iter()
             .map(|item| item.path.as_str())
             .collect::<Vec<_>>();
@@ -1314,7 +2160,7 @@ rules:
         assert_eq!(report.summary.critical_freshness_count, 1);
 
         let broken = report
-            .recommended_docs
+            .governed_docs
             .iter()
             .find(|item| item.path == "docs/broken.md")
             .expect("broken recommendation");
@@ -1327,7 +2173,7 @@ rules:
         assert!(broken.freshness_warning.is_some());
 
         let stale = report
-            .recommended_docs
+            .governed_docs
             .iter()
             .find(|item| item.path == "docs/stale.md")
             .expect("stale recommendation");
@@ -1341,7 +2187,7 @@ rules:
         assert!(stale.freshness_warning.is_some());
 
         let fresh = report
-            .recommended_docs
+            .governed_docs
             .iter()
             .find(|item| item.path == "docs/fresh.md")
             .expect("fresh recommendation");
