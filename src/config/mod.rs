@@ -52,6 +52,8 @@ struct ConfigFile {
     coverage: Option<CoverageConfig>,
     #[serde(default)]
     freshness: Option<FreshnessConfig>,
+    #[serde(default)]
+    routing: Option<RoutingConfig>,
     #[serde(rename = "docInventory", default)]
     doc_inventory: Option<DocInventoryConfig>,
     #[serde(default)]
@@ -78,6 +80,8 @@ struct WorkspaceProfile {
     pub coverage: Option<CoverageConfig>,
     #[serde(default)]
     pub freshness: Option<FreshnessConfig>,
+    #[serde(default)]
+    pub routing: Option<RoutingConfig>,
     #[serde(rename = "docInventory", default)]
     pub doc_inventory: Option<DocInventoryConfig>,
     #[serde(default)]
@@ -99,6 +103,8 @@ struct OverridesConfig {
     pub doc_inventory: Option<ScopedPatternOverride>,
     #[serde(default)]
     pub freshness: Option<FreshnessOverride>,
+    #[serde(default)]
+    pub routing: Option<RoutingOverride>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -135,6 +141,25 @@ struct FreshnessOverride {
     pub warn_after_days: usize,
     #[serde(default = "default_critical_after_days")]
     pub critical_after_days: usize,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+pub struct RoutingConfig {
+    #[serde(default)]
+    pub intents: BTreeMap<String, RoutingIntent>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RoutingIntent {
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RoutingOverride {
+    pub mode: OverrideMode,
+    #[serde(default)]
+    pub intents: BTreeMap<String, RoutingIntent>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -294,6 +319,14 @@ pub struct LoadedDocInventoryConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedRoutingConfig {
+    pub source: String,
+    pub base_dir: String,
+    pub routing: RoutingConfig,
+    pub resolution: BlockResolution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InheritanceResolution {
     pub workspace_profile: String,
     pub add_count: usize,
@@ -303,6 +336,7 @@ pub struct InheritanceResolution {
     pub coverage_mode: Option<String>,
     pub doc_inventory_mode: Option<String>,
     pub freshness_mode: Option<String>,
+    pub routing_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,6 +346,7 @@ pub struct EffectiveConfig {
     pub rules: Vec<LoadedRule>,
     pub coverage: LoadedCoverageConfig,
     pub freshness: LoadedFreshnessConfig,
+    pub routing: LoadedRoutingConfig,
     pub doc_inventory: LoadedDocInventoryConfig,
     pub inheritance: Option<InheritanceResolution>,
 }
@@ -550,6 +585,16 @@ pub fn load_freshness_configs(
         .collect())
 }
 
+pub fn load_routing_configs(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<LoadedRoutingConfig>> {
+    Ok(load_effective_configs(root_dir, config_override)?
+        .into_iter()
+        .map(|effective| effective.routing)
+        .collect())
+}
+
 pub fn load_doc_inventory_configs(
     root_dir: &Path,
     config_override: Option<&Path>,
@@ -626,6 +671,20 @@ fn resolve_repo_local_effective_config(parsed: &ParsedImpactFile) -> Result<Effe
             freshness: parsed.parsed.freshness.clone().unwrap_or_default(),
             resolution: BlockResolution {
                 origin_kind: if parsed.parsed.freshness.is_some() {
+                    ConfigBlockSourceKind::Local
+                } else {
+                    ConfigBlockSourceKind::Default
+                },
+                workspace_profile: None,
+                mode: None,
+            },
+        },
+        routing: LoadedRoutingConfig {
+            source: parsed.descriptor.rel_path.clone(),
+            base_dir: parsed.descriptor.base_dir.clone(),
+            routing: parsed.parsed.routing.clone().unwrap_or_default(),
+            resolution: BlockResolution {
+                origin_kind: if parsed.parsed.routing.is_some() {
                     ConfigBlockSourceKind::Local
                 } else {
                     ConfigBlockSourceKind::Default
@@ -714,6 +773,20 @@ fn resolve_workspace_root_effective_config(root: &ParsedImpactFile) -> Result<Ef
                 mode: None,
             },
         },
+        routing: LoadedRoutingConfig {
+            source: root.descriptor.rel_path.clone(),
+            base_dir: root.descriptor.base_dir.clone(),
+            routing: root.parsed.routing.clone().unwrap_or_default(),
+            resolution: BlockResolution {
+                origin_kind: if root.parsed.routing.is_some() {
+                    ConfigBlockSourceKind::Local
+                } else {
+                    ConfigBlockSourceKind::Default
+                },
+                workspace_profile: None,
+                mode: None,
+            },
+        },
         doc_inventory: LoadedDocInventoryConfig {
             source: root.descriptor.rel_path.clone(),
             base_dir: root.descriptor.base_dir.clone(),
@@ -756,10 +829,11 @@ fn resolve_workspace_child_effective_config(
     if !child.parsed.rules.is_empty()
         || child.parsed.coverage.is_some()
         || child.parsed.freshness.is_some()
+        || child.parsed.routing.is_some()
         || child.parsed.doc_inventory.is_some()
     {
         bail!(
-            "{} uses workspace inheritance and therefore must place all runtime changes under `overrides` instead of top-level `rules`, `coverage`, `freshness`, or `docInventory`",
+            "{} uses workspace inheritance and therefore must place all runtime changes under `overrides` instead of top-level `rules`, `coverage`, `freshness`, `routing`, or `docInventory`",
             child.descriptor.rel_path
         );
     }
@@ -795,6 +869,11 @@ fn resolve_workspace_child_effective_config(
         overrides.coverage.as_ref(),
         &inherit.workspace_profile,
     );
+    let (routing, routing_resolution) = resolve_routing(
+        profile.routing.as_ref(),
+        overrides.routing.as_ref(),
+        &inherit.workspace_profile,
+    );
     let (doc_inventory, doc_inventory_resolution) = resolve_doc_inventory(
         profile.doc_inventory.as_ref(),
         overrides.doc_inventory.as_ref(),
@@ -821,6 +900,12 @@ fn resolve_workspace_child_effective_config(
             base_dir: child.descriptor.base_dir.clone(),
             freshness,
             resolution: freshness_resolution,
+        },
+        routing: LoadedRoutingConfig {
+            source: child.descriptor.rel_path.clone(),
+            base_dir: child.descriptor.base_dir.clone(),
+            routing,
+            resolution: routing_resolution,
         },
         doc_inventory: LoadedDocInventoryConfig {
             source: child.descriptor.rel_path.clone(),
@@ -849,6 +934,10 @@ fn resolve_workspace_child_effective_config(
                 .map(|override_block| override_block.mode.as_str().to_string()),
             freshness_mode: overrides
                 .freshness
+                .as_ref()
+                .map(|override_block| override_block.mode.as_str().to_string()),
+            routing_mode: overrides
+                .routing
                 .as_ref()
                 .map(|override_block| override_block.mode.as_str().to_string()),
         }),
@@ -1108,6 +1197,75 @@ fn resolve_freshness(
     }
 }
 
+fn resolve_routing(
+    inherited: Option<&RoutingConfig>,
+    override_block: Option<&RoutingOverride>,
+    profile_name: &str,
+) -> (RoutingConfig, BlockResolution) {
+    match override_block {
+        Some(override_block) if override_block.mode == OverrideMode::Replace => (
+            RoutingConfig {
+                intents: normalize_routing_intents(&override_block.intents),
+            },
+            BlockResolution {
+                origin_kind: ConfigBlockSourceKind::OverrideReplace,
+                workspace_profile: Some(profile_name.to_string()),
+                mode: Some(override_block.mode.as_str().to_string()),
+            },
+        ),
+        Some(override_block) => {
+            let mut merged = inherited.cloned().unwrap_or_default();
+            for (alias, intent) in normalize_routing_intents(&override_block.intents) {
+                merged.intents.insert(alias, intent);
+            }
+            (
+                merged,
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::OverrideMerge,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: Some(override_block.mode.as_str().to_string()),
+                },
+            )
+        }
+        None => match inherited {
+            Some(inherited) => (
+                RoutingConfig {
+                    intents: normalize_routing_intents(&inherited.intents),
+                },
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::WorkspaceProfile,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: None,
+                },
+            ),
+            None => (
+                RoutingConfig::default(),
+                BlockResolution {
+                    origin_kind: ConfigBlockSourceKind::Default,
+                    workspace_profile: Some(profile_name.to_string()),
+                    mode: None,
+                },
+            ),
+        },
+    }
+}
+
+fn normalize_routing_intents(
+    intents: &BTreeMap<String, RoutingIntent>,
+) -> BTreeMap<String, RoutingIntent> {
+    intents
+        .iter()
+        .map(|(alias, intent)| {
+            (
+                alias.trim().to_string(),
+                RoutingIntent {
+                    paths: sorted_unique_patterns(&intent.paths),
+                },
+            )
+        })
+        .collect()
+}
+
 fn sorted_unique_patterns(patterns: &[String]) -> Vec<String> {
     patterns
         .iter()
@@ -1315,6 +1473,75 @@ pub fn validate_loaded_doc_inventory_configs(
     problems
 }
 
+pub fn validate_loaded_routing_configs(
+    loaded_configs: &[LoadedRoutingConfig],
+) -> Vec<ConfigValidationProblem> {
+    let mut problems = Vec::new();
+    let mut aliases = BTreeMap::<String, Vec<&LoadedRoutingConfig>>::new();
+
+    for loaded in loaded_configs {
+        for (alias, intent) in &loaded.routing.intents {
+            aliases.entry(alias.clone()).or_default().push(loaded);
+
+            if intent.paths.is_empty() {
+                problems.push(ConfigValidationProblem {
+                    source: loaded.source.clone(),
+                    rule_id: None,
+                    message: format!("routing.intents.{alias} must define at least one path"),
+                });
+            }
+
+            for (index, pattern) in intent.paths.iter().enumerate() {
+                if let Some(message) = validate_trigger_path(pattern) {
+                    problems.push(ConfigValidationProblem {
+                        source: loaded.source.clone(),
+                        rule_id: None,
+                        message: format!("routing.intents.{alias}.paths[{index}] {message}"),
+                    });
+                }
+            }
+        }
+    }
+
+    for (alias, entries) in aliases {
+        if entries.len() < 2 {
+            continue;
+        }
+
+        let all_sources = entries
+            .iter()
+            .map(|entry| entry.source.as_str())
+            .collect::<Vec<_>>();
+
+        for entry in entries {
+            let other_sources = all_sources
+                .iter()
+                .copied()
+                .filter(|source| *source != entry.source)
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            problems.push(ConfigValidationProblem {
+                source: entry.source.clone(),
+                rule_id: None,
+                message: format!(
+                    "routing intent alias `{alias}` is duplicated across configs: {other_sources}"
+                ),
+            });
+        }
+    }
+
+    problems.sort_by(|left, right| {
+        (&left.source, &left.rule_id, &left.message).cmp(&(
+            &right.source,
+            &right.rule_id,
+            &right.message,
+        ))
+    });
+
+    problems
+}
+
 fn validate_parsed_configs(parsed_files: &[ParsedImpactFile]) -> Vec<ConfigValidationProblem> {
     let mut problems = Vec::new();
 
@@ -1377,6 +1604,10 @@ fn validate_top_level_blocks(
         validate_freshness_block(&parsed.descriptor.rel_path, freshness, problems);
     }
 
+    if let Some(routing) = parsed.parsed.routing.as_ref() {
+        validate_routing_block(&parsed.descriptor.rel_path, &routing.intents, problems);
+    }
+
     for rule in &parsed.parsed.rules {
         validate_single_rule(
             rule,
@@ -1433,6 +1664,9 @@ fn validate_workspace_config(
             if let Some(freshness) = profile.freshness.as_ref() {
                 validate_freshness_block(&profile_source, freshness, problems);
             }
+            if let Some(routing) = profile.routing.as_ref() {
+                validate_routing_block(&profile_source, &routing.intents, problems);
+            }
             for rule in &profile.rules {
                 validate_single_rule(rule, &profile_source, &parsed.descriptor.base_dir, problems);
             }
@@ -1475,6 +1709,13 @@ fn validate_repo_config(
             source: parsed.descriptor.rel_path.clone(),
             rule_id: None,
             message: "configs using workspace inheritance must not define top-level `freshness`; move it into `overrides.freshness`".into(),
+        });
+    }
+    if parsed.parsed.routing.is_some() {
+        problems.push(ConfigValidationProblem {
+            source: parsed.descriptor.rel_path.clone(),
+            rule_id: None,
+            message: "configs using workspace inheritance must not define top-level `routing`; move it into `overrides.routing`".into(),
         });
     }
     if !parsed.parsed.rules.is_empty() {
@@ -1531,6 +1772,13 @@ fn validate_repo_config(
                 warn_after_days: freshness.warn_after_days,
                 critical_after_days: freshness.critical_after_days,
             },
+            problems,
+        );
+    }
+    if let Some(routing) = overrides.routing.as_ref() {
+        validate_routing_block(
+            &format!("{}#overrides.routing", parsed.descriptor.rel_path),
+            &routing.intents,
             problems,
         );
     }
@@ -1676,6 +1924,40 @@ fn validate_freshness_block(
                 "freshness.critical_after_days must be greater than or equal to freshness.warn_after_days"
                     .into(),
         });
+    }
+}
+
+fn validate_routing_block(
+    source: &str,
+    intents: &BTreeMap<String, RoutingIntent>,
+    problems: &mut Vec<ConfigValidationProblem>,
+) {
+    for (alias, intent) in intents {
+        if alias.trim().is_empty() {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: "routing intent alias must not be empty".into(),
+            });
+        }
+
+        if intent.paths.is_empty() {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!("routing.intents.{alias} must define at least one path"),
+            });
+        }
+
+        for (index, pattern) in intent.paths.iter().enumerate() {
+            if let Some(message) = validate_trigger_path(pattern) {
+                problems.push(ConfigValidationProblem {
+                    source: source.into(),
+                    rule_id: None,
+                    message: format!("routing.intents.{alias}.paths[{index}] {message}"),
+                });
+            }
+        }
     }
 }
 
@@ -1866,8 +2148,9 @@ mod tests {
 
     use super::{
         CONFIG_FILE, DOC_ROOT_DIR, ImpactLayout, RuleOriginKind, detect_impact_layout,
-        load_effective_configs, load_impact_files, normalize_path, resolve_rule_path,
-        root_dir_from_option, validate_config_graph, validate_loaded_rules,
+        load_effective_configs, load_impact_files, load_routing_configs, normalize_path,
+        resolve_rule_path, root_dir_from_option, validate_config_graph,
+        validate_loaded_routing_configs, validate_loaded_rules,
     };
 
     fn temp_dir(prefix: &str) -> PathBuf {
@@ -1945,6 +2228,11 @@ workspace:
         warn_after_commits: 10
         warn_after_days: 20
         critical_after_days: 30
+      routing:
+        intents:
+          shared:
+            paths:
+              - src/**
       rules:
         - id: inherited-rule
           scope: workspace
@@ -2014,6 +2302,15 @@ overrides:
     warn_after_commits: 21
     warn_after_days: 34
     critical_after_days: 55
+  routing:
+    mode: merge
+    intents:
+      payments:
+        paths:
+          - src/payments/**
+      shared:
+        paths:
+          - src/app/**
 "#,
         )
         .expect("child config");
@@ -2035,6 +2332,26 @@ overrides:
         );
         assert_eq!(child.coverage.coverage.include, vec!["src/**", "tests/**"]);
         assert_eq!(child.coverage.coverage.exclude, vec!["dist/**"]);
+        assert_eq!(
+            child
+                .routing
+                .routing
+                .intents
+                .get("shared")
+                .expect("shared intent")
+                .paths,
+            vec!["src/app/**"]
+        );
+        assert_eq!(
+            child
+                .routing
+                .routing
+                .intents
+                .get("payments")
+                .expect("payments intent")
+                .paths,
+            vec!["src/payments/**"]
+        );
         assert_eq!(child.doc_inventory.doc_inventory.include, vec!["README.md"]);
         assert_eq!(child.freshness.freshness.warn_after_commits, 21);
         assert_eq!(child.rules.len(), 2);
@@ -2053,6 +2370,15 @@ overrides:
             "sample-sdk/.docpact/config.yaml"
         );
         assert_eq!(child.rules[0].base_dir, "sample-sdk");
+        assert_eq!(
+            child
+                .inheritance
+                .as_ref()
+                .expect("inheritance should exist")
+                .routing_mode
+                .as_deref(),
+            Some("merge")
+        );
     }
 
     #[test]
@@ -2184,6 +2510,63 @@ overrides:
         }));
         assert!(messages.iter().any(|message| {
             message.contains("overrides.freshness only supports `mode: replace`")
+        }));
+    }
+
+    #[test]
+    fn strict_validation_reports_duplicate_routing_intent_aliases() {
+        let root = temp_dir("docpact-routing-duplicate-intents");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root dir");
+        fs::create_dir_all(root.join(format!("a/{DOC_ROOT_DIR}"))).expect("repo a dir");
+        fs::create_dir_all(root.join(format!("b/{DOC_ROOT_DIR}"))).expect("repo b dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+rules: []
+"#,
+        )
+        .expect("root config");
+        fs::write(
+            root.join(format!("a/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+routing:
+  intents:
+    payments:
+      paths:
+        - src/a/**
+rules: []
+"#,
+        )
+        .expect("repo a config");
+        fs::write(
+            root.join(format!("b/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+routing:
+  intents:
+    payments:
+      paths:
+        - src/b/**
+rules: []
+"#,
+        )
+        .expect("repo b config");
+
+        let routing_configs = load_routing_configs(&root, None).expect("routing configs");
+        let problems = validate_loaded_routing_configs(&routing_configs);
+        let messages = problems
+            .iter()
+            .map(|problem| problem.message.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(messages.iter().any(|message| {
+            message.contains("routing intent alias `payments` is duplicated across configs")
         }));
     }
 

@@ -4,9 +4,9 @@ use crate::AppExit;
 use crate::cli::ValidateConfigArgs;
 use crate::config::{
     load_coverage_configs, load_doc_inventory_configs, load_freshness_configs, load_impact_files,
-    root_dir_from_option, validate_config_graph, validate_loaded_coverage_configs,
-    validate_loaded_doc_inventory_configs, validate_loaded_freshness_configs,
-    validate_loaded_rules,
+    load_routing_configs, root_dir_from_option, validate_config_graph,
+    validate_loaded_coverage_configs, validate_loaded_doc_inventory_configs,
+    validate_loaded_freshness_configs, validate_loaded_routing_configs, validate_loaded_rules,
 };
 
 pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
@@ -14,6 +14,7 @@ pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
     let rules = load_impact_files(&root_dir, args.config.as_deref())?;
     let coverage_configs = load_coverage_configs(&root_dir, args.config.as_deref())?;
     let freshness_configs = load_freshness_configs(&root_dir, args.config.as_deref())?;
+    let routing_configs = load_routing_configs(&root_dir, args.config.as_deref())?;
     let doc_inventory_configs = load_doc_inventory_configs(&root_dir, args.config.as_deref())?;
 
     if !args.strict {
@@ -28,6 +29,7 @@ pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
     problems.extend(validate_loaded_rules(&rules));
     problems.extend(validate_loaded_coverage_configs(&coverage_configs));
     problems.extend(validate_loaded_freshness_configs(&freshness_configs));
+    problems.extend(validate_loaded_routing_configs(&routing_configs));
     problems.extend(validate_loaded_doc_inventory_configs(
         &doc_inventory_configs,
     ));

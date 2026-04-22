@@ -40,8 +40,10 @@ pub struct DoctorSummary {
     pub inherited_config_count: usize,
     pub rule_count: usize,
     pub coverage_configured: bool,
+    pub routing_configured: bool,
     pub doc_inventory_configured: bool,
     pub freshness_configured: bool,
+    pub routing_intent_count: usize,
     pub governed_doc_count: usize,
 }
 
@@ -55,8 +57,10 @@ pub struct DoctorConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_profile: Option<String>,
     pub coverage_resolution: String,
+    pub routing_resolution: String,
     pub doc_inventory_resolution: String,
     pub freshness_resolution: String,
+    pub routing_intent_count: usize,
     pub override_add_count: usize,
     pub override_replace_count: usize,
     pub override_disable_count: usize,
@@ -105,8 +109,10 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
                 inherited_config_count: 0,
                 rule_count: 0,
                 coverage_configured: false,
+                routing_configured: false,
                 doc_inventory_configured: false,
                 freshness_configured: false,
+                routing_intent_count: 0,
                 governed_doc_count: 0,
             },
             Vec::new(),
@@ -135,8 +141,10 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
                     inherited_config_count: 0,
                     rule_count: 0,
                     coverage_configured: false,
+                    routing_configured: false,
                     doc_inventory_configured: false,
                     freshness_configured: false,
+                    routing_intent_count: 0,
                     governed_doc_count: 0,
                 },
                 Vec::new(),
@@ -163,8 +171,10 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
                     inherited_config_count: 0,
                     rule_count: 0,
                     coverage_configured: false,
+                    routing_configured: false,
                     doc_inventory_configured: false,
                     freshness_configured: false,
+                    routing_intent_count: 0,
                     governed_doc_count: 0,
                 },
                 Vec::new(),
@@ -203,9 +213,16 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
         !config.doc_inventory.doc_inventory.include.is_empty()
             || !config.doc_inventory.doc_inventory.exclude.is_empty()
     });
+    let routing_configured = effective_configs
+        .iter()
+        .any(|config| !config.routing.routing.intents.is_empty());
     let freshness_configured = effective_configs
         .iter()
         .any(|config| config.freshness.resolution.origin_kind != ConfigBlockSourceKind::Default);
+    let routing_intent_count = effective_configs
+        .iter()
+        .map(|config| config.routing.routing.intents.len())
+        .sum();
     let inherited_config_count = effective_configs
         .iter()
         .filter(|config| config.inheritance.is_some())
@@ -218,8 +235,10 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
         inherited_config_count,
         rule_count,
         coverage_configured,
+        routing_configured,
         doc_inventory_configured,
         freshness_configured,
+        routing_intent_count,
         governed_doc_count,
     };
 
@@ -319,15 +338,17 @@ fn emit_report(report: &DoctorReport, format: DoctorOutputFormat) {
 fn emit_text_report(report: &DoctorReport) {
     println!("Docpact doctor:");
     println!(
-        "Summary: config_present={}, layout={}, effective_configs={}, inherited_configs={}, rule_count={}, coverage_configured={}, doc_inventory_configured={}, freshness_configured={}, governed_doc_count={}",
+        "Summary: config_present={}, layout={}, effective_configs={}, inherited_configs={}, rule_count={}, coverage_configured={}, routing_configured={}, doc_inventory_configured={}, freshness_configured={}, routing_intents={}, governed_doc_count={}",
         report.summary.config_present,
         report.summary.layout,
         report.summary.effective_config_count,
         report.summary.inherited_config_count,
         report.summary.rule_count,
         report.summary.coverage_configured,
+        report.summary.routing_configured,
         report.summary.doc_inventory_configured,
         report.summary.freshness_configured,
+        report.summary.routing_intent_count,
         report.summary.governed_doc_count,
     );
     println!("Configs:");
@@ -336,7 +357,7 @@ fn emit_text_report(report: &DoctorReport) {
     } else {
         for config in &report.configs {
             println!(
-                "- source={} base_dir={} inherited={} profile={} rules={} governed_docs={} coverage_resolution={} doc_inventory_resolution={} freshness_resolution={} overrides(add={},replace={},disable={})",
+                "- source={} base_dir={} inherited={} profile={} rules={} governed_docs={} coverage_resolution={} routing_resolution={} doc_inventory_resolution={} freshness_resolution={} routing_intents={} overrides(add={},replace={},disable={})",
                 config.source,
                 if config.base_dir.is_empty() {
                     ".".to_string()
@@ -351,8 +372,10 @@ fn emit_text_report(report: &DoctorReport) {
                 config.rule_count,
                 config.governed_doc_count,
                 config.coverage_resolution,
+                config.routing_resolution,
                 config.doc_inventory_resolution,
                 config.freshness_resolution,
+                config.routing_intent_count,
                 config.override_add_count,
                 config.override_replace_count,
                 config.override_disable_count,
@@ -436,6 +459,7 @@ fn build_doctor_configs(effective_configs: &[EffectiveConfig]) -> Vec<DoctorConf
                     .as_ref()
                     .map(|inheritance| inheritance.workspace_profile.clone()),
                 coverage_resolution: config.coverage.resolution.origin_kind.as_str().into(),
+                routing_resolution: config.routing.resolution.origin_kind.as_str().into(),
                 doc_inventory_resolution: config
                     .doc_inventory
                     .resolution
@@ -443,6 +467,7 @@ fn build_doctor_configs(effective_configs: &[EffectiveConfig]) -> Vec<DoctorConf
                     .as_str()
                     .into(),
                 freshness_resolution: config.freshness.resolution.origin_kind.as_str().into(),
+                routing_intent_count: config.routing.routing.intents.len(),
                 override_add_count: config
                     .inheritance
                     .as_ref()
@@ -595,6 +620,11 @@ freshness:
   warn_after_commits: 10
   warn_after_days: 30
   critical_after_days: 60
+routing:
+  intents:
+    api:
+      paths:
+        - src/**
 rules:
   - id: api-docs
     scope: repo
@@ -612,8 +642,10 @@ rules:
         let report = execute(&base_args(&root)).expect("doctor should execute");
 
         assert!(report.summary.coverage_configured);
+        assert!(report.summary.routing_configured);
         assert!(report.summary.doc_inventory_configured);
         assert!(report.summary.freshness_configured);
+        assert_eq!(report.summary.routing_intent_count, 1);
         assert_eq!(report.summary.governed_doc_count, 1);
         assert!(report.findings.is_empty());
     }
@@ -641,6 +673,11 @@ workspace:
         warn_after_commits: 10
         warn_after_days: 30
         critical_after_days: 60
+      routing:
+        intents:
+          service:
+            paths:
+              - src/**
       rules:
         - id: inherited-rule
           scope: workspace
@@ -717,6 +754,12 @@ overrides:
     warn_after_commits: 21
     warn_after_days: 34
     critical_after_days: 55
+  routing:
+    mode: merge
+    intents:
+      payments:
+        paths:
+          - src/payments/**
 "#,
         )
         .expect("service config");
@@ -738,7 +781,9 @@ overrides:
         assert_eq!(service.override_replace_count, 1);
         assert_eq!(service.override_disable_count, 1);
         assert_eq!(service.coverage_resolution, "override-merge");
+        assert_eq!(service.routing_resolution, "override-merge");
         assert_eq!(service.doc_inventory_resolution, "override-replace");
         assert_eq!(service.freshness_resolution, "override-replace");
+        assert_eq!(service.routing_intent_count, 2);
     }
 }

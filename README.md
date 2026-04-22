@@ -61,6 +61,7 @@ This repository now contains the current product core:
 - diff coverage for uncovered changes
 - repository coverage audit
 - repository freshness audit
+- deterministic routing with explicit paths, module scope, and controlled intents
 - report-backed diagnostics drill-down
 - explicit review-evidence recording
 - baseline creation and application
@@ -70,4 +71,4 @@ This repository now contains the current product core:
 - warning vs blocking exit behavior
 - text, JSON, and SARIF-capable reporting surfaces
 
-It is not yet the full planned product. Higher-order drift detection, ignore support, richer config validation, routing, and broader ecosystem integrations remain future work.
+It is not yet the full planned product. Higher-order drift detection, ignore support, richer config validation, and broader ecosystem integrations remain future work.

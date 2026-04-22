@@ -140,7 +140,11 @@ pub struct RouteArgs {
     #[arg(long)]
     pub config: Option<PathBuf>,
     #[arg(long)]
-    pub paths: String,
+    pub paths: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub module: Vec<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub intent: Vec<String>,
     #[arg(long, value_enum, default_value_t = RouteDetail::Compact)]
     pub detail: RouteDetail,
     #[arg(long, value_parser = parse_positive_usize)]
@@ -482,6 +486,10 @@ mod tests {
             ".docpact/config.yaml",
             "--paths",
             "src/payments/charge.ts,src/payments/refund.ts",
+            "--module",
+            "src/payments",
+            "--intent",
+            "payments,auth",
             "--detail",
             "full",
             "--limit",
@@ -498,7 +506,12 @@ mod tests {
                     args.config.as_deref(),
                     Some(std::path::Path::new(".docpact/config.yaml"))
                 );
-                assert_eq!(args.paths, "src/payments/charge.ts,src/payments/refund.ts");
+                assert_eq!(
+                    args.paths.as_deref(),
+                    Some("src/payments/charge.ts,src/payments/refund.ts")
+                );
+                assert_eq!(args.module, vec!["src/payments"]);
+                assert_eq!(args.intent, vec!["payments", "auth"]);
                 assert_eq!(args.detail, RouteDetail::Full);
                 assert_eq!(args.limit, Some(7));
                 assert_eq!(args.format, RouteOutputFormat::Json);

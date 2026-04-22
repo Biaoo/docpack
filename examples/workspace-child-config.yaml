@@ -48,3 +48,10 @@ overrides:
     warn_after_commits: 20
     warn_after_days: 30
     critical_after_days: 60
+  routing:
+    mode: merge
+    intents:
+      payments:
+        paths:
+          - src/payments/**
+          - docs/payments.md

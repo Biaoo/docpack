@@ -13,6 +13,16 @@ freshness:
   warn_after_commits: 50
   warn_after_days: 90
   critical_after_days: 180
+routing:
+  intents:
+    api:
+      paths:
+        - src/api/**
+        - src/commands/**
+    governance:
+      paths:
+        - .docpact/**
+        - docs/**
 docInventory:
   include:
     - README.md

@@ -12,6 +12,12 @@ freshness:
   warn_after_commits: 50
   warn_after_days: 90
   critical_after_days: 180
+routing:
+  intents:
+    root-governance:
+      paths:
+        - docs/**
+        - .github/**
 docInventory:
   include:
     - AGENTS.md
@@ -36,6 +42,12 @@ workspace:
         warn_after_commits: 30
         warn_after_days: 45
         critical_after_days: 90
+      routing:
+        intents:
+          repo-bootstrap:
+            paths:
+              - src/**
+              - README.md
       rules:
         - id: repo-bootstrap
           scope: repo

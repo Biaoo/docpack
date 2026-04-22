@@ -7,7 +7,10 @@ use serde::Serialize;
 
 use crate::AppExit;
 use crate::cli::{RouteArgs, RouteDetail, RouteOutputFormat};
-use crate::config::{load_impact_files, normalize_path, resolve_rule_path, root_dir_from_option};
+use crate::config::{
+    LoadedRoutingConfig, load_impact_files, load_routing_configs, normalize_path,
+    resolve_rule_path, root_dir_from_option,
+};
 use crate::freshness::{FreshnessItem, RouteFreshnessTarget, execute_route_freshness_with_today};
 use crate::git::get_tracked_paths;
 use crate::rules::{RequiredDocMode, matches_pattern};
@@ -26,6 +29,8 @@ pub struct RouteReport {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct RouteSummary {
     pub input_path_count: usize,
+    pub module_input_count: usize,
+    pub intent_input_count: usize,
     pub matched_rule_count: usize,
     pub recommended_doc_count: usize,
     pub freshness_warning_count: usize,
@@ -74,6 +79,14 @@ struct ResolvedInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedInputs {
+    explicit_path_count: usize,
+    module_count: usize,
+    intent_count: usize,
+    resolved_inputs: Vec<ResolvedInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct RecommendationBuilder {
     path: String,
     rule_ids: BTreeSet<String>,
@@ -99,13 +112,13 @@ pub fn execute(args: &RouteArgs) -> Result<RouteReport> {
 fn execute_with_today(args: &RouteArgs, today: &str) -> Result<RouteReport> {
     let root_dir = root_dir_from_option(args.root.as_deref())?;
     let loaded_rules = load_impact_files(&root_dir, args.config.as_deref())?;
-    let inputs = parse_input_paths(&args.paths)?;
-    let resolved_inputs = resolve_inputs(&root_dir, &inputs)?;
+    let routing_configs = load_routing_configs(&root_dir, args.config.as_deref())?;
+    let prepared_inputs = prepare_inputs(&root_dir, args, &routing_configs)?;
 
     let mut matched_rule_keys = BTreeSet::new();
     let mut recommendations = BTreeMap::<String, RecommendationBuilder>::new();
 
-    for input in &resolved_inputs {
+    for input in &prepared_inputs.resolved_inputs {
         for candidate_path in &input.candidates {
             for loaded in &loaded_rules {
                 let matched_triggers = loaded
@@ -198,7 +211,9 @@ fn execute_with_today(args: &RouteArgs, today: &str) -> Result<RouteReport> {
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
         summary: RouteSummary {
-            input_path_count: inputs.len(),
+            input_path_count: prepared_inputs.explicit_path_count,
+            module_input_count: prepared_inputs.module_count,
+            intent_input_count: prepared_inputs.intent_count,
             matched_rule_count: matched_rule_keys.len(),
             recommended_doc_count: recommended_docs.len(),
             freshness_warning_count,
@@ -347,53 +362,151 @@ fn trigger_specificity_score(pattern: &str) -> usize {
     raw_score.saturating_sub(penalty).min(20)
 }
 
-fn parse_input_paths(paths: &str) -> Result<Vec<String>> {
-    let values = paths
-        .split(',')
-        .map(|value| normalize_path(value.trim()))
-        .filter(|value| !value.is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
+fn prepare_inputs(
+    root_dir: &Path,
+    args: &RouteArgs,
+    routing_configs: &[LoadedRoutingConfig],
+) -> Result<PreparedInputs> {
+    let explicit_paths = parse_optional_csv_inputs(args.paths.as_deref())?;
+    let modules = parse_named_inputs(&args.module, "module")?;
+    let intents = parse_named_inputs(&args.intent, "intent")?;
 
-    if values.is_empty() {
-        bail!("Pass at least one non-empty path through --paths.");
+    if explicit_paths.is_empty() && modules.is_empty() && intents.is_empty() {
+        bail!("Pass at least one non-empty route input through --paths, --module, or --intent.");
     }
 
-    Ok(values)
-}
+    let tracked_paths = get_tracked_paths(root_dir)?;
+    let mut resolved_inputs = Vec::new();
 
-fn resolve_inputs(root_dir: &Path, inputs: &[String]) -> Result<Vec<ResolvedInput>> {
-    let tracked_paths = if inputs.iter().any(|value| has_glob_syntax(value)) {
-        Some(get_tracked_paths(root_dir)?)
-    } else {
-        None
-    };
-
-    let mut resolved = Vec::with_capacity(inputs.len());
-
-    for input in inputs {
+    for input in &explicit_paths {
         if has_glob_syntax(input) {
             let candidates = tracked_paths
-                .as_ref()
-                .expect("tracked paths should exist when glob syntax is present")
                 .iter()
                 .filter(|tracked| matches_pattern(tracked, input))
                 .cloned()
                 .collect::<Vec<_>>();
-            resolved.push(ResolvedInput {
+            resolved_inputs.push(ResolvedInput {
                 original: input.clone(),
                 candidates,
             });
         } else {
-            resolved.push(ResolvedInput {
+            resolved_inputs.push(ResolvedInput {
                 original: input.clone(),
                 candidates: vec![input.clone()],
             });
         }
     }
 
-    Ok(resolved)
+    for module in &modules {
+        if has_glob_syntax(module) {
+            bail!(
+                "`--module` does not accept glob syntax; pass a repo-relative path prefix instead."
+            );
+        }
+
+        let prefix = module.trim_end_matches('/').to_string();
+        let candidates = tracked_paths
+            .iter()
+            .filter(|tracked| matches_module_scope(tracked, &prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        resolved_inputs.push(ResolvedInput {
+            original: format!("module:{prefix}"),
+            candidates,
+        });
+    }
+
+    let intent_index = build_intent_index(routing_configs)?;
+    for intent in &intents {
+        let Some(patterns) = intent_index.get(intent) else {
+            bail!("Unknown routing intent alias `{intent}`.");
+        };
+
+        let candidates = tracked_paths
+            .iter()
+            .filter(|tracked| {
+                patterns
+                    .iter()
+                    .any(|pattern| matches_pattern(tracked, pattern))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        resolved_inputs.push(ResolvedInput {
+            original: format!("intent:{intent}"),
+            candidates,
+        });
+    }
+
+    Ok(PreparedInputs {
+        explicit_path_count: explicit_paths.len(),
+        module_count: modules.len(),
+        intent_count: intents.len(),
+        resolved_inputs,
+    })
+}
+
+fn parse_optional_csv_inputs(values: Option<&str>) -> Result<Vec<String>> {
+    Ok(values
+        .unwrap_or_default()
+        .split(',')
+        .map(|value| normalize_path(value.trim()))
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>())
+}
+
+fn parse_named_inputs(values: &[String], flag_name: &str) -> Result<Vec<String>> {
+    let parsed = values
+        .iter()
+        .map(|value| normalize_path(value.trim()))
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if values.iter().any(|value| value.trim().is_empty()) {
+        bail!("`--{flag_name}` must not include empty values.");
+    }
+
+    Ok(parsed)
+}
+
+fn build_intent_index(
+    routing_configs: &[LoadedRoutingConfig],
+) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut index = BTreeMap::<String, (String, Vec<String>)>::new();
+
+    for loaded in routing_configs {
+        for (alias, intent) in &loaded.routing.intents {
+            let resolved_patterns = intent
+                .paths
+                .iter()
+                .map(|pattern| resolve_rule_path(&loaded.base_dir, pattern))
+                .collect::<Vec<_>>();
+
+            if let Some((existing_source, _)) = index.get(alias) {
+                bail!(
+                    "routing intent alias `{alias}` is ambiguous across `{existing_source}` and `{}`",
+                    loaded.source
+                );
+            }
+
+            index.insert(alias.clone(), (loaded.source.clone(), resolved_patterns));
+        }
+    }
+
+    Ok(index
+        .into_iter()
+        .map(|(alias, (_, patterns))| (alias, patterns))
+        .collect())
+}
+
+fn matches_module_scope(tracked_path: &str, module: &str) -> bool {
+    tracked_path == module
+        || tracked_path
+            .strip_prefix(module)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn has_glob_syntax(value: &str) -> bool {
@@ -467,8 +580,10 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
     let mut output = String::new();
     output.push_str("Docpact route recommendations:\n");
     output.push_str(&format!(
-        "Summary: input_paths={} matched_rules={} recommended_docs={} freshness_warnings={} critical_freshness={}\n",
+        "Summary: input_paths={} modules={} intents={} matched_rules={} recommended_docs={} freshness_warnings={} critical_freshness={}\n",
         report.summary.input_path_count,
+        report.summary.module_input_count,
+        report.summary.intent_input_count,
         report.summary.matched_rule_count,
         report.summary.recommended_doc_count,
         report.summary.freshness_warning_count,
@@ -613,7 +728,9 @@ mod tests {
         RouteArgs {
             root: Some(root),
             config: None,
-            paths: paths.into(),
+            paths: Some(paths.into()),
+            module: Vec::new(),
+            intent: Vec::new(),
             detail: RouteDetail::Compact,
             limit: None,
             format: RouteOutputFormat::Json,
@@ -749,6 +866,142 @@ rules:
         assert_eq!(
             report.recommended_docs[0].match_reason.matched_input_paths,
             vec!["src/auth/**"]
+        );
+    }
+
+    #[test]
+    fn route_expands_module_inputs_against_tracked_paths() {
+        let root = temp_dir("docpact-route-module");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/payments")).expect("payments dir");
+        fs::create_dir_all(root.join("docs")).expect("docs dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+repo:
+  id: demo
+rules:
+  - id: payments-docs
+    scope: repo
+    repo: demo
+    triggers:
+      - path: src/payments/**
+        kind: code
+    requiredDocs:
+      - path: docs/payments.md
+        mode: review_or_update
+    reason: Keep payments docs aligned.
+"#,
+        )
+        .expect("config should be written");
+        fs::write(
+            root.join("src/payments/charge.ts"),
+            "export const charge = 1;\n",
+        )
+        .expect("source file should be written");
+        fs::write(root.join("docs/payments.md"), "# Payments\n")
+            .expect("doc file should be written");
+        git(&root, &["add", "."]);
+
+        let mut args = base_args(root.clone(), "");
+        args.paths = None;
+        args.module = vec!["src/payments".into()];
+        let report = execute_with_today(&args, "2026-04-22").expect("route report");
+
+        assert_eq!(report.summary.input_path_count, 0);
+        assert_eq!(report.summary.module_input_count, 1);
+        assert_eq!(report.summary.intent_input_count, 0);
+        assert_eq!(report.summary.recommended_doc_count, 1);
+        assert_eq!(
+            report.recommended_docs[0].match_reason.matched_input_paths,
+            vec!["module:src/payments"]
+        );
+    }
+
+    #[test]
+    fn route_resolves_controlled_intent_aliases() {
+        let root = temp_dir("docpact-route-intent");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/auth")).expect("auth dir");
+        fs::create_dir_all(root.join("docs")).expect("docs dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+routing:
+  intents:
+    auth:
+      paths:
+        - src/auth/**
+repo:
+  id: demo
+rules:
+  - id: auth-docs
+    scope: repo
+    repo: demo
+    triggers:
+      - path: src/auth/**
+        kind: code
+    requiredDocs:
+      - path: docs/auth.md
+        mode: body_update_required
+    reason: Keep auth docs aligned.
+"#,
+        )
+        .expect("config should be written");
+        fs::write(root.join("src/auth/login.ts"), "export const login = 1;\n")
+            .expect("source file should be written");
+        fs::write(root.join("docs/auth.md"), "# Auth\n").expect("doc file should be written");
+        git(&root, &["add", "."]);
+
+        let mut args = base_args(root.clone(), "");
+        args.paths = None;
+        args.intent = vec!["auth".into()];
+        let report = execute_with_today(&args, "2026-04-22").expect("route report");
+
+        assert_eq!(report.summary.input_path_count, 0);
+        assert_eq!(report.summary.module_input_count, 0);
+        assert_eq!(report.summary.intent_input_count, 1);
+        assert_eq!(report.summary.recommended_doc_count, 1);
+        assert_eq!(
+            report.recommended_docs[0].match_reason.matched_input_paths,
+            vec!["intent:auth"]
+        );
+    }
+
+    #[test]
+    fn route_rejects_unknown_intent_aliases() {
+        let root = temp_dir("docpact-route-unknown-intent");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+repo:
+  id: demo
+rules: []
+"#,
+        )
+        .expect("config should be written");
+        git(&root, &["add", "."]);
+
+        let mut args = base_args(root.clone(), "");
+        args.paths = None;
+        args.intent = vec!["missing".into()];
+        let error = execute_with_today(&args, "2026-04-22").expect_err("route should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Unknown routing intent alias `missing`")
         );
     }
 
