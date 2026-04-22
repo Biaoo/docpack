@@ -1,17 +1,16 @@
 # docpact
 
-`docpact` is a Rust-first standalone CLI for diff-driven AI documentation drift checks.
+`docpact` is a standalone Rust CLI for deterministic, diff-driven documentation governance.
 
-It is meant to be installed as a CLI and used in local workflows and CI.
+It helps teams and agents answer three practical questions:
 
-Current distribution status:
+- before coding: what documents should I read first?
+- after coding: what documentation should this change have reviewed or updated?
+- ongoing: which governed documents have gone stale?
 
-- published on crates.io
-- installable via `cargo install docpact`
-- runnable from source via `cargo run`
-- installable from a local checkout via `cargo install --path .`
+`docpact` stays deterministic. It does not replace governance decisions with AI inference, and it does not hide state in background services or opaque caches.
 
-## Quick Start
+## Install
 
 Install from crates.io:
 
@@ -19,57 +18,183 @@ Install from crates.io:
 cargo install docpact
 ```
 
-Create `.docpact/config.yaml` in the target repository, then run:
+Run from source:
+
+```bash
+cargo run -- <command>
+```
+
+Install from a local checkout:
+
+```bash
+cargo install --path .
+```
+
+## Quick Start
+
+1. Start from one of the bundled config examples:
+   - [examples/repo-config.yaml](./examples/repo-config.yaml)
+   - [examples/workspace-config.yaml](./examples/workspace-config.yaml)
+   - [examples/workspace-child-config.yaml](./examples/workspace-child-config.yaml)
+2. Copy the right shape into the target repository as `.docpact/config.yaml`.
+3. Validate the config.
+4. Run `lint` against an explicit diff source.
+
+Example:
 
 ```bash
 docpact validate-config --root /path/to/repo
 docpact validate-config --root /path/to/repo --strict
-docpact lint --root /path/to/repo --files src/api/client.ts,README.md
+docpact lint --root /path/to/repo --files src/api/client.ts,README.md --format text
 ```
 
-For a full setup guide, start with [../docs/README.md](../docs/README.md).
+`lint` always needs one explicit diff source. Use one of:
 
-If you are developing `docpact` itself, local source workflows are still supported via `cargo run` and `cargo install --path .`.
+- `--files <csv>`
+- `--staged`
+- `--worktree`
+- `--merge-base <ref>`
+- `--base <sha> --head <sha>`
 
-## Document Map
+## Core Commands
 
-- [../docs/README.md](../docs/README.md) / [../docs/README.zh-CN.md](../docs/README.zh-CN.md): documentation hub and reading guide
-- [../docs/installation.md](../docs/installation.md) / [../docs/installation.zh-CN.md](../docs/installation.zh-CN.md): how to install or run the CLI today
-- [../docs/usage.md](../docs/usage.md) / [../docs/usage.zh-CN.md](../docs/usage.zh-CN.md): quick start, commands, diff modes, outputs, and local workflow
-- [../docs/configuration.md](../docs/configuration.md) / [../docs/configuration.zh-CN.md](../docs/configuration.zh-CN.md): detailed config reference and rule behavior
-- [../docs/github-actions.md](../docs/github-actions.md) / [../docs/github-actions.zh-CN.md](../docs/github-actions.zh-CN.md): GitHub Actions integration examples
-- [examples/github-actions/](./examples/github-actions): official workflow examples for PR lint, adoption controls, coverage audit, and freshness audit
-- [skills/README.md](./skills/README.md): official skill layout, boundaries, and authoring conventions
-- [../docs/product-vision.md](../docs/product-vision.md) / [../docs/product-vision.zh-CN.md](../docs/product-vision.zh-CN.md): product positioning, scope, and roadmap
-- [../docs/roadmap.md](../docs/roadmap.md) / [../docs/roadmap.zh-CN.md](../docs/roadmap.zh-CN.md): staged delivery plan, coverage milestones, and priorities
-- [../docs/features.md](../docs/features.md) / [../docs/features.zh-CN.md](../docs/features.zh-CN.md): current capabilities, limitations, and implementation notes
-- [examples/workspace-config.yaml](./examples/workspace-config.yaml): standalone reference snippet for a workspace `config.yaml`
-- [examples/repo-config.yaml](./examples/repo-config.yaml): standalone reference snippet for a repo `config.yaml`
+### Validate configuration
 
-The new project also standardizes on one reserved config entrypoint:
+```bash
+docpact validate-config --root /path/to/repo
+docpact validate-config --root /path/to/repo --strict
+```
 
-- `.docpact/config.yaml`
+### Check a concrete change
 
-## Current State
+```bash
+docpact lint --root /path/to/repo --files src/api/client.ts,README.md --format json --output .docpact/runs/latest.json
+```
 
-This repository now contains the current product core:
+### Drill into one finding
 
-- changed-path collection from explicit files or git diff sources
-- explicit repo/workspace config loading
+```bash
+docpact diagnostics show --report .docpact/runs/latest.json --id d001 --format json
+```
+
+### Record completed review evidence
+
+```bash
+docpact review mark --root /path/to/repo --path docs/api.md
+```
+
+or, when coming from one explicit lint finding:
+
+```bash
+docpact review mark --root /path/to/repo --report .docpact/runs/latest.json --id d001
+```
+
+### Audit governance coverage
+
+```bash
+docpact coverage --root /path/to/repo --format json
+```
+
+### Audit document freshness
+
+```bash
+docpact freshness --root /path/to/repo --format json
+```
+
+### Route reading before coding
+
+```bash
+docpact route --root /path/to/repo --paths src/payments/** --format json
+docpact route --root /path/to/repo --module src/payments --format text
+docpact route --root /path/to/repo --intent payments --format json
+```
+
+## Adoption Controls
+
+`docpact` supports explicit adoption controls for repositories that cannot enforce all existing debt immediately.
+
+Create and apply a baseline:
+
+```bash
+docpact baseline create --report .docpact/runs/latest.json --output .docpact/baseline.json
+docpact lint --root /path/to/repo --files src/api/client.ts,README.md --baseline .docpact/baseline.json
+```
+
+Add a waiver for one explicit finding:
+
+```bash
+docpact waiver add \
+  --report .docpact/runs/latest.json \
+  --id d001 \
+  --reason "temporary exception during migration" \
+  --owner "team-docs" \
+  --expires-at 2026-05-31 \
+  --output .docpact/waivers.yaml
+```
+
+Then apply it during lint:
+
+```bash
+docpact lint --root /path/to/repo --files src/api/client.ts,README.md --waivers .docpact/waivers.yaml
+```
+
+Use waivers sparingly. They are temporary, explicit exceptions, not a default suppression path.
+
+## GitHub Actions
+
+This repository ships a thin official GitHub Action wrapper in [action.yml](./action.yml).
+
+Typical usage:
+
+```yaml
+- uses: <org>/docpact@v1
+  with:
+    version: 0.1.0
+    args: >
+      lint
+      --root .
+      --base ${{ github.event.pull_request.base.sha }}
+      --head ${{ github.sha }}
+      --mode enforce
+```
+
+Reference workflows:
+
+- [examples/github-actions/pr-lint.yml](./examples/github-actions/pr-lint.yml)
+- [examples/github-actions/pr-lint-with-adoption-controls.yml](./examples/github-actions/pr-lint-with-adoption-controls.yml)
+- [examples/github-actions/coverage-audit.yml](./examples/github-actions/coverage-audit.yml)
+- [examples/github-actions/freshness-audit.yml](./examples/github-actions/freshness-audit.yml)
+
+## Skills
+
+This repository also ships official workflow skills under [skills/](./skills):
+
+- [skills/README.md](./skills/README.md)
+- [skills/docpact/SKILL.md](./skills/docpact/SKILL.md): direct workflow entrypoint
+- [skills/docpact-governance/SKILL.md](./skills/docpact-governance/SKILL.md): governance-maintainer entrypoint
+
+## Current Capabilities
+
+Current `docpact` capabilities include:
+
+- repo and workspace config loading
 - explicit workspace profile inheritance and child overrides
-- trigger-to-required-doc matching
-- Markdown and YAML metadata checks on governed required docs
-- diff coverage for uncovered changes
-- repository coverage audit
+- deterministic trigger-to-required-doc matching
+- metadata checks on governed Markdown and YAML docs
+- diff coverage and repository coverage audit
 - repository freshness audit
-- deterministic routing with explicit paths, module scope, and controlled intents
+- deterministic routing with paths, module scope, and controlled intents
 - report-backed diagnostics drill-down
 - explicit review-evidence recording
-- baseline creation and application
-- waiver creation and application
+- baseline and waiver lifecycle
 - list-rules and doctor inspection commands
+- text, JSON, and SARIF reporting
 - official GitHub Action wrapper
-- warning vs blocking exit behavior
-- text, JSON, and SARIF-capable reporting surfaces
+- official skills for direct workflow and governance maintenance
 
-It is not yet the full planned product. Higher-order drift detection, ignore support, richer config validation, and broader ecosystem integrations remain future work.
+Still deferred:
+
+- symbol-level drift checks
+- executable documentation hooks
+- AI-assisted semantic review
+- documentation generation from code
