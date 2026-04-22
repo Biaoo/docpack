@@ -42,6 +42,10 @@ Official skills in this directory are product-level, reusable workflows maintain
 
 Repository-specific or organization-specific skills should live outside the core product repository unless the underlying workflow is broadly reusable and aligns with published CLI semantics.
 
+## Implemented Skills
+
+- `repository-onboarding`: guide first-time repository adoption around `doctor`, `list-rules`, `coverage`, `validate-config --strict`, and baseline-first staged rollout.
+
 ## Authoring Guidance
 
 When adding a new official skill:

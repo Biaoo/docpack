@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Onboarding"
+  short_description: "Guide first-time docpact adoption."
+  default_prompt: "Use $repository-onboarding to plan or draft a first-pass docpact onboarding workflow for this repository."
