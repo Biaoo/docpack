@@ -179,7 +179,7 @@ Typical usage:
 ```yaml
 - uses: <org>/docpact@v1
   with:
-    version: 0.1.1
+    version: 0.1.2
     args: >
       lint
       --root .
