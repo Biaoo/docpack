@@ -1,0 +1,4 @@
+interface:
+  display_name: "Routing Configuration"
+  short_description: "Maintain controlled docpact route intents."
+  default_prompt: "Use $routing-configuration to design or revise controlled routing intents for docpact route."
