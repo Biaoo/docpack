@@ -2,12 +2,13 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use miette::{Result, bail};
+use miette::{IntoDiagnostic, Result, bail};
 use serde::Serialize;
 
 use crate::AppExit;
 use crate::cli::{RouteArgs, RouteDetail, RouteOutputFormat};
 use crate::config::{load_impact_files, normalize_path, resolve_rule_path, root_dir_from_option};
+use crate::freshness::{FreshnessItem, RouteFreshnessTarget, execute_route_freshness_with_today};
 use crate::git::get_tracked_paths;
 use crate::rules::{RequiredDocMode, matches_pattern};
 
@@ -27,6 +28,8 @@ pub struct RouteSummary {
     pub input_path_count: usize,
     pub matched_rule_count: usize,
     pub recommended_doc_count: usize,
+    pub freshness_warning_count: usize,
+    pub critical_freshness_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -35,6 +38,11 @@ pub struct RouteRecommendation {
     pub priority: String,
     pub match_reason: RouteMatchReason,
     pub score_breakdown: RouteScoreBreakdown,
+    pub freshness_level: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub freshness_warning: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_reference_problems: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub config_sources: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -55,6 +63,7 @@ pub struct RouteScoreBreakdown {
     pub specificity_score: usize,
     pub matched_input_count: usize,
     pub matched_rule_count: usize,
+    pub freshness_penalty: usize,
     pub total_score: usize,
 }
 
@@ -83,6 +92,11 @@ pub fn run(args: RouteArgs) -> Result<AppExit> {
 }
 
 pub fn execute(args: &RouteArgs) -> Result<RouteReport> {
+    let today = today_date_string()?;
+    execute_with_today(args, &today)
+}
+
+fn execute_with_today(args: &RouteArgs, today: &str) -> Result<RouteReport> {
     let root_dir = root_dir_from_option(args.root.as_deref())?;
     let loaded_rules = load_impact_files(&root_dir, args.config.as_deref())?;
     let inputs = parse_input_paths(&args.paths)?;
@@ -144,13 +158,40 @@ pub fn execute(args: &RouteArgs) -> Result<RouteReport> {
         }
     }
 
+    let freshness_targets = recommendations
+        .values()
+        .map(|entry| RouteFreshnessTarget {
+            path: entry.path.clone(),
+            config_sources: entry.config_sources.iter().cloned().collect(),
+            associated_patterns: entry.matched_trigger_paths.iter().cloned().collect(),
+        })
+        .collect::<Vec<_>>();
+    let freshness_by_path = execute_route_freshness_with_today(
+        &root_dir,
+        args.config.as_deref(),
+        &freshness_targets,
+        today,
+    )?;
+
     let include_sources = args.detail == RouteDetail::Full;
     let mut recommended_docs = recommendations
         .into_values()
-        .map(|entry| build_recommendation(entry, include_sources))
+        .map(|entry| {
+            let freshness = freshness_by_path.get(&entry.path);
+            build_recommendation(entry, freshness, include_sources)
+        })
         .collect::<Vec<_>>();
 
     recommended_docs.sort_by(compare_recommendations);
+
+    let freshness_warning_count = recommended_docs
+        .iter()
+        .filter(|item| item.freshness_level != "ok" || !item.review_reference_problems.is_empty())
+        .count();
+    let critical_freshness_count = recommended_docs
+        .iter()
+        .filter(|item| item.freshness_level == "critical")
+        .count();
 
     Ok(RouteReport {
         schema_version: ROUTE_SCHEMA_VERSION.into(),
@@ -160,6 +201,8 @@ pub fn execute(args: &RouteArgs) -> Result<RouteReport> {
             input_path_count: inputs.len(),
             matched_rule_count: matched_rule_keys.len(),
             recommended_doc_count: recommended_docs.len(),
+            freshness_warning_count,
+            critical_freshness_count,
         },
         recommended_docs,
     })
@@ -167,6 +210,7 @@ pub fn execute(args: &RouteArgs) -> Result<RouteReport> {
 
 fn build_recommendation(
     entry: RecommendationBuilder,
+    freshness: Option<&FreshnessItem>,
     include_sources: bool,
 ) -> RouteRecommendation {
     let mode_score = entry
@@ -177,11 +221,20 @@ fn build_recommendation(
         .unwrap_or_default();
     let matched_input_count = entry.matched_input_paths.len();
     let matched_rule_count = entry.rule_ids.len();
-    let total_score = mode_score
+    let base_score = mode_score
         + entry.best_specificity_score
         + matched_input_count * 3
         + matched_rule_count * 2;
+    let freshness_penalty = freshness.map(freshness_penalty).unwrap_or_default();
+    let total_score = base_score.saturating_sub(freshness_penalty);
     let priority = priority_from_score(total_score);
+    let freshness_level = freshness
+        .map(|item| item.staleness_level.clone())
+        .unwrap_or_else(|| "ok".into());
+    let review_reference_problems = freshness
+        .map(|item| item.review_reference_problems.clone())
+        .unwrap_or_default();
+    let freshness_warning = build_freshness_warning(freshness);
 
     RouteRecommendation {
         path: entry.path,
@@ -201,8 +254,12 @@ fn build_recommendation(
             specificity_score: entry.best_specificity_score,
             matched_input_count,
             matched_rule_count,
+            freshness_penalty,
             total_score,
         },
+        freshness_level,
+        freshness_warning,
+        review_reference_problems,
         config_sources: if include_sources {
             entry.config_sources.into_iter().collect()
         } else {
@@ -343,6 +400,54 @@ fn has_glob_syntax(value: &str) -> bool {
     value.contains('*') || value.contains('?')
 }
 
+fn freshness_penalty(item: &FreshnessItem) -> usize {
+    match item.staleness_level.as_str() {
+        "critical" => 20,
+        "warn" => 10,
+        _ => 0,
+    }
+}
+
+fn build_freshness_warning(item: Option<&FreshnessItem>) -> Option<String> {
+    let item = item?;
+    let mut parts = Vec::new();
+
+    match item.staleness_level.as_str() {
+        "critical" => parts.push("potentially stale (critical)".to_string()),
+        "warn" => parts.push("potentially stale (warn)".to_string()),
+        _ => {}
+    }
+
+    if !item.review_reference_problems.is_empty() {
+        parts.push(format!(
+            "review references: {}",
+            item.review_reference_problems.join(",")
+        ));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
+    }
+}
+
+fn today_date_string() -> Result<String> {
+    let output = std::process::Command::new("date")
+        .args(["+%F"])
+        .output()
+        .into_diagnostic()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!("date +%F failed: {stderr}");
+    }
+
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(|error| miette::miette!("date output was not valid UTF-8: {error}"))
+}
+
 fn emit_report(
     report: &RouteReport,
     format: RouteOutputFormat,
@@ -362,10 +467,12 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
     let mut output = String::new();
     output.push_str("Docpact route recommendations:\n");
     output.push_str(&format!(
-        "Summary: input_paths={} matched_rules={} recommended_docs={}\n",
+        "Summary: input_paths={} matched_rules={} recommended_docs={} freshness_warnings={} critical_freshness={}\n",
         report.summary.input_path_count,
         report.summary.matched_rule_count,
         report.summary.recommended_doc_count,
+        report.summary.freshness_warning_count,
+        report.summary.critical_freshness_count,
     ));
 
     let displayed = limit
@@ -388,42 +495,58 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
 
     for recommendation in report.recommended_docs.iter().take(displayed) {
         output.push_str(&format!(
-            "- path={} priority={} rules={} inputs={}\n",
+            "- path={} priority={} freshness={} rules={} inputs={}\n",
             recommendation.path,
             recommendation.priority,
+            recommendation.freshness_level,
             recommendation.match_reason.rule_ids.join(","),
             recommendation.match_reason.matched_input_paths.join(","),
         ));
 
-        if detail == RouteDetail::Full {
-            output.push_str(&format!(
-                "  triggers={}\n",
-                recommendation.match_reason.matched_trigger_paths.join(",")
-            ));
-            output.push_str(&format!(
-                "  modes={}\n",
-                recommendation.match_reason.modes.join(",")
-            ));
-            output.push_str(&format!(
-                "  score mode={} specificity={} matched_inputs={} matched_rules={} total={}\n",
-                recommendation.score_breakdown.mode_score,
-                recommendation.score_breakdown.specificity_score,
-                recommendation.score_breakdown.matched_input_count,
-                recommendation.score_breakdown.matched_rule_count,
-                recommendation.score_breakdown.total_score,
-            ));
-            if !recommendation.config_sources.is_empty() {
-                output.push_str(&format!(
-                    "  config_sources={}\n",
-                    recommendation.config_sources.join(",")
-                ));
+        if detail == RouteDetail::Compact {
+            if let Some(warning) = &recommendation.freshness_warning {
+                output.push_str(&format!("  freshness_warning={warning}\n"));
             }
-            if !recommendation.rule_sources.is_empty() {
-                output.push_str(&format!(
-                    "  rule_sources={}\n",
-                    recommendation.rule_sources.join(",")
-                ));
-            }
+            continue;
+        }
+
+        output.push_str(&format!(
+            "  triggers={}\n",
+            recommendation.match_reason.matched_trigger_paths.join(",")
+        ));
+        output.push_str(&format!(
+            "  modes={}\n",
+            recommendation.match_reason.modes.join(",")
+        ));
+        output.push_str(&format!(
+            "  score mode={} specificity={} matched_inputs={} matched_rules={} freshness_penalty={} total={}\n",
+            recommendation.score_breakdown.mode_score,
+            recommendation.score_breakdown.specificity_score,
+            recommendation.score_breakdown.matched_input_count,
+            recommendation.score_breakdown.matched_rule_count,
+            recommendation.score_breakdown.freshness_penalty,
+            recommendation.score_breakdown.total_score,
+        ));
+        if let Some(warning) = &recommendation.freshness_warning {
+            output.push_str(&format!("  freshness_warning={warning}\n"));
+        }
+        if !recommendation.review_reference_problems.is_empty() {
+            output.push_str(&format!(
+                "  review_reference_problems={}\n",
+                recommendation.review_reference_problems.join(",")
+            ));
+        }
+        if !recommendation.config_sources.is_empty() {
+            output.push_str(&format!(
+                "  config_sources={}\n",
+                recommendation.config_sources.join(",")
+            ));
+        }
+        if !recommendation.rule_sources.is_empty() {
+            output.push_str(&format!(
+                "  rule_sources={}\n",
+                recommendation.rule_sources.join(",")
+            ));
         }
     }
 
@@ -437,7 +560,7 @@ mod tests {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{ROUTE_SCHEMA_VERSION, execute, render_text_report};
+    use super::{ROUTE_SCHEMA_VERSION, execute_with_today, render_text_report};
     use crate::cli::{RouteArgs, RouteDetail, RouteOutputFormat};
 
     fn temp_dir(prefix: &str) -> PathBuf {
@@ -461,6 +584,23 @@ mod tests {
             "git command failed: git {}",
             args.join(" ")
         );
+    }
+
+    fn git_stdout(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git command failed: git {}",
+            args.join(" ")
+        );
+        String::from_utf8(output.stdout)
+            .expect("git stdout should be utf-8")
+            .trim()
+            .to_string()
     }
 
     fn init_git_repo(root: &Path) {
@@ -518,13 +658,18 @@ rules:
             .expect("doc file should be written");
         git(&root, &["add", "."]);
 
-        let report =
-            execute(&base_args(root.clone(), "src/payments/charge.ts")).expect("route report");
+        let report = execute_with_today(
+            &base_args(root.clone(), "src/payments/charge.ts"),
+            "2026-04-22",
+        )
+        .expect("route report");
 
         assert_eq!(report.schema_version, ROUTE_SCHEMA_VERSION);
         assert_eq!(report.summary.input_path_count, 1);
         assert_eq!(report.summary.matched_rule_count, 1);
         assert_eq!(report.summary.recommended_doc_count, 1);
+        assert_eq!(report.summary.freshness_warning_count, 1);
+        assert_eq!(report.summary.critical_freshness_count, 0);
         let recommendation = &report.recommended_docs[0];
         assert_eq!(recommendation.path, "docs/payments.md");
         assert_eq!(recommendation.priority, "high");
@@ -543,6 +688,13 @@ rules:
         );
         assert_eq!(recommendation.score_breakdown.mode_score, 40);
         assert!(recommendation.score_breakdown.total_score >= 50);
+        assert_eq!(recommendation.freshness_level, "ok");
+        assert!(recommendation.freshness_warning.is_some());
+        assert!(
+            recommendation
+                .review_reference_problems
+                .contains(&"missing-lastReviewedCommit".to_string())
+        );
         assert!(recommendation.config_sources.is_empty());
         assert!(recommendation.rule_sources.is_empty());
     }
@@ -586,7 +738,8 @@ rules:
         fs::write(root.join("docs/auth.md"), "# Auth\n").expect("doc file should be written");
         git(&root, &["add", "."]);
 
-        let report = execute(&base_args(root.clone(), "src/auth/**")).expect("route report");
+        let report = execute_with_today(&base_args(root.clone(), "src/auth/**"), "2026-04-22")
+            .expect("route report");
 
         assert_eq!(report.summary.input_path_count, 1);
         assert_eq!(report.summary.matched_rule_count, 1);
@@ -629,8 +782,11 @@ rules:
         .expect("config should be written");
         git(&root, &["add", "."]);
 
-        let report = execute(&base_args(root.clone(), "src/payments/charge.ts"))
-            .expect("route report should execute");
+        let report = execute_with_today(
+            &base_args(root.clone(), "src/payments/charge.ts"),
+            "2026-04-22",
+        )
+        .expect("route report should execute");
 
         assert_eq!(report.summary.input_path_count, 1);
         assert_eq!(report.summary.matched_rule_count, 0);
@@ -697,8 +853,11 @@ rules:
         fs::write(root.join("docs/meta.md"), "# Meta\n").expect("doc file");
         git(&root, &["add", "."]);
 
-        let report = execute(&base_args(root.clone(), "src/payments/admin/panel.ts"))
-            .expect("route report should execute");
+        let report = execute_with_today(
+            &base_args(root.clone(), "src/payments/admin/panel.ts"),
+            "2026-04-22",
+        )
+        .expect("route report should execute");
 
         let ordered_paths = report
             .recommended_docs
@@ -750,15 +909,17 @@ rules:
 
         let mut args = base_args(root.clone(), "src/api/client.ts");
         args.detail = RouteDetail::Full;
-        let report = execute(&args).expect("route report should execute");
+        let report = execute_with_today(&args, "2026-04-22").expect("route report should execute");
         let recommendation = &report.recommended_docs[0];
         assert_eq!(recommendation.config_sources, vec![".docpact/config.yaml"]);
         assert_eq!(recommendation.rule_sources, vec![".docpact/config.yaml"]);
 
         let rendered = render_text_report(&report, RouteDetail::Full, Some(1));
         assert!(rendered.contains("priority="));
+        assert!(rendered.contains("freshness="));
         assert!(rendered.contains("triggers=src/api/**"));
         assert!(rendered.contains("score mode="));
+        assert!(rendered.contains("freshness_penalty="));
         assert!(rendered.contains("config_sources=.docpact/config.yaml"));
         assert!(rendered.contains("rule_sources=.docpact/config.yaml"));
     }
@@ -808,10 +969,136 @@ rules:
         fs::write(root.join("docs/b.md"), "# B\n").expect("doc file");
         git(&root, &["add", "."]);
 
-        let report = execute(&base_args(root.clone(), "src/file-a.ts,src/file-b.ts"))
-            .expect("route report should execute");
+        let report = execute_with_today(
+            &base_args(root.clone(), "src/file-a.ts,src/file-b.ts"),
+            "2026-04-22",
+        )
+        .expect("route report should execute");
         let rendered = render_text_report(&report, RouteDetail::Compact, Some(1));
         assert!(rendered.contains("showing 1 of 2"));
         assert!(rendered.contains("path=docs/a.md") || rendered.contains("path=docs/b.md"));
+    }
+
+    #[test]
+    fn route_demotes_stale_docs_and_surfaces_invalid_review_references() {
+        let root = temp_dir("docpact-route-freshness");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/api")).expect("api dir");
+        fs::create_dir_all(root.join("docs")).expect("docs dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+freshness:
+  warn_after_commits: 1
+  warn_after_days: 30
+  critical_after_days: 180
+repo:
+  id: demo
+rules:
+  - id: api-stale
+    scope: repo
+    repo: demo
+    triggers:
+      - path: src/api/client.ts
+        kind: code
+    requiredDocs:
+      - path: docs/stale.md
+        mode: body_update_required
+      - path: docs/broken.md
+        mode: body_update_required
+    reason: stale
+  - id: api-fresh
+    scope: repo
+    repo: demo
+    triggers:
+      - path: src/api/client.ts
+        kind: code
+    requiredDocs:
+      - path: docs/fresh.md
+        mode: body_update_required
+    reason: fresh
+"#,
+        )
+        .expect("config");
+        fs::write(root.join("src/api/client.ts"), "export const client = 1;\n").expect("src");
+        fs::write(
+            root.join("docs/stale.md"),
+            "---\nlastReviewedAt: 2025-01-01\nlastReviewedCommit: deadbeef\n---\n# Stale\n",
+        )
+        .expect("stale doc");
+        fs::write(root.join("docs/fresh.md"), "# Fresh\n").expect("fresh doc");
+        fs::write(root.join("docs/broken.md"), "# Broken\n").expect("broken doc");
+        git(&root, &["add", "."]);
+        let base = git_commit_all(&root, "base");
+
+        fs::write(root.join("src/api/client.ts"), "export const client = 2;\n").expect("src");
+        git(&root, &["add", "src/api/client.ts"]);
+        let _head = git_commit_all(&root, "change");
+
+        fs::write(
+            root.join("docs/fresh.md"),
+            format!("---\nlastReviewedAt: 2026-04-20\nlastReviewedCommit: {base}\n---\n# Fresh\n"),
+        )
+        .expect("fresh doc update");
+
+        let report =
+            execute_with_today(&base_args(root.clone(), "src/api/client.ts"), "2026-04-22")
+                .expect("route report should execute");
+        let ordered_paths = report
+            .recommended_docs
+            .iter()
+            .map(|item| item.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered_paths,
+            vec!["docs/broken.md", "docs/fresh.md", "docs/stale.md"]
+        );
+        assert_eq!(report.summary.freshness_warning_count, 3);
+        assert_eq!(report.summary.critical_freshness_count, 1);
+
+        let broken = report
+            .recommended_docs
+            .iter()
+            .find(|item| item.path == "docs/broken.md")
+            .expect("broken recommendation");
+        assert_eq!(broken.freshness_level, "ok");
+        assert!(
+            broken
+                .review_reference_problems
+                .contains(&"missing-lastReviewedCommit".to_string())
+        );
+        assert!(broken.freshness_warning.is_some());
+
+        let stale = report
+            .recommended_docs
+            .iter()
+            .find(|item| item.path == "docs/stale.md")
+            .expect("stale recommendation");
+        assert_eq!(stale.freshness_level, "critical");
+        assert!(
+            stale
+                .review_reference_problems
+                .contains(&"invalid-lastReviewedCommit".to_string())
+        );
+        assert!(stale.score_breakdown.freshness_penalty > 0);
+        assert!(stale.freshness_warning.is_some());
+
+        let fresh = report
+            .recommended_docs
+            .iter()
+            .find(|item| item.path == "docs/fresh.md")
+            .expect("fresh recommendation");
+        assert_eq!(fresh.freshness_level, "warn");
+        assert_eq!(fresh.score_breakdown.freshness_penalty, 10);
+        assert!(fresh.freshness_warning.is_some());
+    }
+
+    fn git_commit_all(root: &Path, message: &str) -> String {
+        git(root, &["commit", "-m", message]);
+        git_stdout(root, &["rev-parse", "HEAD"])
     }
 }

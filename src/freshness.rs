@@ -62,6 +62,13 @@ pub struct LintFreshnessReport {
     pub stale_docs: Vec<FreshnessItem>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteFreshnessTarget {
+    pub path: String,
+    pub config_sources: Vec<String>,
+    pub associated_patterns: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 struct GovernedDocContext {
     thresholds: FreshnessConfig,
@@ -172,6 +179,58 @@ fn execute_lint_for_matched_rules_with_today(
         summary,
         stale_docs,
     })
+}
+
+pub fn execute_route_freshness(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+    targets: &[RouteFreshnessTarget],
+) -> Result<BTreeMap<String, FreshnessItem>> {
+    let today = today_date_string()?;
+    execute_route_freshness_with_today(root_dir, config_override, targets, &today)
+}
+
+pub(crate) fn execute_route_freshness_with_today(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+    targets: &[RouteFreshnessTarget],
+    today: &str,
+) -> Result<BTreeMap<String, FreshnessItem>> {
+    if targets.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let impact_files = list_impact_files(root_dir, config_override)?;
+    let tracked_paths = collect_tracked_paths(root_dir, &impact_files)?;
+    let freshness_configs = load_freshness_configs(root_dir, config_override)?;
+    let freshness_by_source = freshness_configs
+        .into_iter()
+        .map(|loaded| (loaded.source, loaded.freshness))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut contexts = BTreeMap::<String, GovernedDocContext>::new();
+    for target in targets {
+        let mut thresholds = FreshnessConfig::default();
+        for source in &target.config_sources {
+            if let Some(config) = freshness_by_source.get(source) {
+                thresholds = merge_thresholds(&thresholds, config);
+            }
+        }
+
+        contexts.insert(
+            target.path.clone(),
+            GovernedDocContext {
+                thresholds,
+                associated_patterns: target.associated_patterns.iter().cloned().collect(),
+            },
+        );
+    }
+
+    let items = evaluate_contexts(root_dir, &contexts, &tracked_paths, today)?;
+    Ok(items
+        .into_iter()
+        .map(|item| (item.path.clone(), item))
+        .collect::<BTreeMap<_, _>>())
 }
 
 fn build_governed_doc_contexts(
