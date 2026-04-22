@@ -1,0 +1,110 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to crates.io and create a GitHub Release. Only works on a version tag."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      is_tag_release: ${{ steps.meta.outputs.is_tag_release }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve package version and validate tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(python3 - <<'PY'
+          import pathlib, tomllib
+          data = tomllib.loads(pathlib.Path("Cargo.toml").read_text())
+          print(data["package"]["version"])
+          PY
+          )"
+
+          expected_tag="v${version}"
+          is_tag_release=false
+
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+              echo "::error title=Tag/version mismatch::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version} (expected ${expected_tag})."
+              exit 1
+            fi
+            is_tag_release=true
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${expected_tag}" >> "$GITHUB_OUTPUT"
+          echo "is_tag_release=${is_tag_release}" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Run publish dry-run
+        run: cargo publish --dry-run --locked
+
+  publish:
+    needs: verify
+    if: needs.verify.outputs.is_tag_release == 'true' && (github.event_name == 'push' || inputs.publish)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure crates.io token is configured
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${CARGO_REGISTRY_TOKEN}" ]]; then
+            echo "::error title=Missing secret::CARGO_REGISTRY_TOKEN is required for release publishing."
+            exit 1
+          fi
+
+      - name: Publish crate
+        run: cargo publish --locked --token "${CARGO_REGISTRY_TOKEN}"
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.verify.outputs.tag }}"
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "GitHub Release ${tag} already exists; skipping creation."
+          else
+            gh release create "${tag}" --generate-notes --title "${tag}"
+          fi

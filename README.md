@@ -10,6 +10,8 @@ It helps teams and agents answer three practical questions:
 
 `docpact` stays deterministic. It does not replace governance decisions with AI inference, and it does not hide state in background services or opaque caches.
 
+License: [MIT](./LICENSE)
+
 ## Why docpact
 
 AI coding tools make code changes cheaper. They also make documentation drift cheaper.
@@ -180,6 +182,11 @@ Reference workflows:
 - [examples/github-actions/pr-lint-with-adoption-controls.yml](./examples/github-actions/pr-lint-with-adoption-controls.yml)
 - [examples/github-actions/coverage-audit.yml](./examples/github-actions/coverage-audit.yml)
 - [examples/github-actions/freshness-audit.yml](./examples/github-actions/freshness-audit.yml)
+
+Repository CI workflows:
+
+- [test.yml](./.github/workflows/test.yml): minimal PR and default-branch test CI
+- [release.yml](./.github/workflows/release.yml): tag-driven crates.io publish and GitHub Release
 
 ## Skills
 
