@@ -2,6 +2,26 @@ version: 1
 layout: repo
 lastReviewedAt: 2026-04-20
 lastReviewedCommit: example-repo-config
+catalog:
+  repos:
+    - id: sample-sdk
+      path: .
+      canonicalRepo: Biaoo/sample-sdk
+      entryDoc: README.md
+      branchPolicyDoc: docs/branch-policy.md
+      workflowDocs:
+        - docs/workflows/local-dev.md
+      integrationDocs:
+        - docs/workflows/workspace-integration.md
+      workspaceIntegrationRequired: false
+ownership:
+  domains:
+    - id: public-api
+      paths:
+        include:
+          - src/api/**
+          - src/commands/**
+      ownerRepo: sample-sdk
 coverage:
   include:
     - src/**

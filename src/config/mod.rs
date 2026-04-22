@@ -54,6 +54,10 @@ struct ConfigFile {
     freshness: Option<FreshnessConfig>,
     #[serde(default)]
     routing: Option<RoutingConfig>,
+    #[serde(default)]
+    catalog: Option<CatalogConfig>,
+    #[serde(default)]
+    ownership: Option<OwnershipConfig>,
     #[serde(rename = "docInventory", default)]
     doc_inventory: Option<DocInventoryConfig>,
     #[serde(default)]
@@ -105,6 +109,59 @@ struct OverridesConfig {
     pub freshness: Option<FreshnessOverride>,
     #[serde(default)]
     pub routing: Option<RoutingOverride>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogConfig {
+    #[serde(default)]
+    pub repos: Vec<CatalogRepo>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogRepo {
+    pub id: String,
+    pub path: String,
+    #[serde(rename = "canonicalRepo", default)]
+    pub canonical_repo: Option<String>,
+    #[serde(rename = "entryDoc", default)]
+    pub entry_doc: Option<String>,
+    #[serde(rename = "branchPolicyDoc", default)]
+    pub branch_policy_doc: Option<String>,
+    #[serde(rename = "workflowDocs", default)]
+    pub workflow_docs: Vec<String>,
+    #[serde(rename = "integrationDocs", default)]
+    pub integration_docs: Vec<String>,
+    #[serde(rename = "workspaceIntegrationRequired", default)]
+    pub workspace_integration_required: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OwnershipConfig {
+    #[serde(default)]
+    pub domains: Vec<OwnershipDomain>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OwnershipDomain {
+    pub id: String,
+    pub paths: OwnershipPaths,
+    #[serde(rename = "ownerRepo")]
+    pub owner_repo: String,
+    #[serde(rename = "nonOwnerRepos", default)]
+    pub non_owner_repos: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OwnershipPaths {
+    #[serde(default)]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -324,6 +381,62 @@ pub struct LoadedRoutingConfig {
     pub base_dir: String,
     pub routing: RoutingConfig,
     pub resolution: BlockResolution,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedCatalogConfig {
+    pub source: String,
+    pub base_dir: String,
+    pub catalog: CatalogConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedOwnershipConfig {
+    pub source: String,
+    pub base_dir: String,
+    pub ownership: OwnershipConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipDomainMatch {
+    pub source: String,
+    pub base_dir: String,
+    pub domain_id: String,
+    pub owner_repo: String,
+    pub matched_include: String,
+    pub static_prefix_len: usize,
+    pub wildcard_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipPathAnalysis {
+    pub path: String,
+    pub matches: Vec<OwnershipDomainMatch>,
+    pub selected: OwnershipDomainMatch,
+    pub has_conflict: bool,
+    pub has_overlap: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipConflict {
+    pub path: String,
+    pub owner_repos: Vec<String>,
+    pub domain_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipOverlap {
+    pub path: String,
+    pub owner_repo: String,
+    pub domain_ids: Vec<String>,
+    pub selected_domain_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipAnalysis {
+    pub paths: Vec<OwnershipPathAnalysis>,
+    pub conflicts: Vec<OwnershipConflict>,
+    pub overlaps: Vec<OwnershipOverlap>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -592,6 +705,34 @@ pub fn load_routing_configs(
     Ok(load_effective_configs(root_dir, config_override)?
         .into_iter()
         .map(|effective| effective.routing)
+        .collect())
+}
+
+pub fn load_catalog_configs(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<LoadedCatalogConfig>> {
+    Ok(load_parsed_impact_files(root_dir, config_override)?
+        .into_iter()
+        .map(|parsed| LoadedCatalogConfig {
+            source: parsed.descriptor.rel_path,
+            base_dir: parsed.descriptor.base_dir,
+            catalog: normalize_catalog_config(&parsed.parsed.catalog.unwrap_or_default()),
+        })
+        .collect())
+}
+
+pub fn load_ownership_configs(
+    root_dir: &Path,
+    config_override: Option<&Path>,
+) -> Result<Vec<LoadedOwnershipConfig>> {
+    Ok(load_parsed_impact_files(root_dir, config_override)?
+        .into_iter()
+        .map(|parsed| LoadedOwnershipConfig {
+            source: parsed.descriptor.rel_path,
+            base_dir: parsed.descriptor.base_dir,
+            ownership: normalize_ownership_config(&parsed.parsed.ownership.unwrap_or_default()),
+        })
         .collect())
 }
 
@@ -1250,6 +1391,80 @@ fn resolve_routing(
     }
 }
 
+fn normalize_catalog_config(catalog: &CatalogConfig) -> CatalogConfig {
+    CatalogConfig {
+        repos: catalog.repos.iter().map(normalize_catalog_repo).collect(),
+    }
+}
+
+fn normalize_catalog_repo(repo: &CatalogRepo) -> CatalogRepo {
+    CatalogRepo {
+        id: repo.id.trim().to_string(),
+        path: normalize_catalog_repo_path(&repo.path),
+        canonical_repo: repo
+            .canonical_repo
+            .as_ref()
+            .map(|value| value.trim().to_string()),
+        entry_doc: repo
+            .entry_doc
+            .as_ref()
+            .map(|value| normalize_path(value.trim())),
+        branch_policy_doc: repo
+            .branch_policy_doc
+            .as_ref()
+            .map(|value| normalize_path(value.trim())),
+        workflow_docs: normalize_exact_doc_pointer_list(&repo.workflow_docs),
+        integration_docs: normalize_exact_doc_pointer_list(&repo.integration_docs),
+        workspace_integration_required: repo.workspace_integration_required,
+    }
+}
+
+fn normalize_ownership_config(ownership: &OwnershipConfig) -> OwnershipConfig {
+    OwnershipConfig {
+        domains: ownership
+            .domains
+            .iter()
+            .map(normalize_ownership_domain)
+            .collect(),
+    }
+}
+
+fn normalize_ownership_domain(domain: &OwnershipDomain) -> OwnershipDomain {
+    OwnershipDomain {
+        id: domain.id.trim().to_string(),
+        paths: OwnershipPaths {
+            include: sorted_unique_patterns(&domain.paths.include),
+            exclude: sorted_unique_patterns(&domain.paths.exclude),
+        },
+        owner_repo: domain.owner_repo.trim().to_string(),
+        non_owner_repos: domain
+            .non_owner_repos
+            .iter()
+            .map(|repo| repo.trim().to_string())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn normalize_catalog_repo_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed == "." {
+        ".".into()
+    } else {
+        normalize_path(trimmed)
+    }
+}
+
+fn normalize_exact_doc_pointer_list(paths: &[String]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| normalize_path(path.trim()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn normalize_routing_intents(
     intents: &BTreeMap<String, RoutingIntent>,
 ) -> BTreeMap<String, RoutingIntent> {
@@ -1542,6 +1757,376 @@ pub fn validate_loaded_routing_configs(
     problems
 }
 
+pub fn validate_loaded_catalog_configs(
+    loaded_configs: &[LoadedCatalogConfig],
+) -> Vec<ConfigValidationProblem> {
+    let mut problems = Vec::new();
+    let mut id_sources = BTreeMap::<String, Vec<&LoadedCatalogConfig>>::new();
+    let mut path_sources = BTreeMap::<String, Vec<&LoadedCatalogConfig>>::new();
+    let mut repo_entries = Vec::<(&LoadedCatalogConfig, &CatalogRepo)>::new();
+
+    for loaded in loaded_configs {
+        for repo in &loaded.catalog.repos {
+            if !repo.id.is_empty() {
+                id_sources.entry(repo.id.clone()).or_default().push(loaded);
+            }
+            if !repo.path.is_empty() {
+                path_sources
+                    .entry(repo.path.clone())
+                    .or_default()
+                    .push(loaded);
+            }
+            repo_entries.push((loaded, repo));
+        }
+    }
+
+    for (repo_id, entries) in id_sources {
+        if entries.len() < 2 {
+            continue;
+        }
+
+        let all_sources = entries
+            .iter()
+            .map(|entry| entry.source.as_str())
+            .collect::<Vec<_>>();
+
+        for entry in entries {
+            let other_sources = all_sources
+                .iter()
+                .copied()
+                .filter(|source| *source != entry.source)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let other_sources = if other_sources.is_empty() {
+                entry.source.clone()
+            } else {
+                other_sources
+            };
+            problems.push(ConfigValidationProblem {
+                source: entry.source.clone(),
+                rule_id: None,
+                message: format!(
+                    "catalog repo id `{repo_id}` is duplicated across configs: {other_sources}"
+                ),
+            });
+        }
+    }
+
+    for (repo_path, entries) in path_sources {
+        if entries.len() < 2 {
+            continue;
+        }
+
+        let all_sources = entries
+            .iter()
+            .map(|entry| entry.source.as_str())
+            .collect::<Vec<_>>();
+
+        for entry in entries {
+            let other_sources = all_sources
+                .iter()
+                .copied()
+                .filter(|source| *source != entry.source)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let other_sources = if other_sources.is_empty() {
+                entry.source.clone()
+            } else {
+                other_sources
+            };
+            problems.push(ConfigValidationProblem {
+                source: entry.source.clone(),
+                rule_id: None,
+                message: format!(
+                    "catalog repo path `{repo_path}` is duplicated across configs: {other_sources}"
+                ),
+            });
+        }
+    }
+
+    for left_index in 0..repo_entries.len() {
+        for right_index in (left_index + 1)..repo_entries.len() {
+            let (left_loaded, left_repo) = repo_entries[left_index];
+            let (right_loaded, right_repo) = repo_entries[right_index];
+            if left_repo.path == right_repo.path {
+                continue;
+            }
+            if !catalog_repo_paths_overlap(&left_repo.path, &right_repo.path) {
+                continue;
+            }
+
+            problems.push(ConfigValidationProblem {
+                source: left_loaded.source.clone(),
+                rule_id: None,
+                message: format!(
+                    "catalog repo path `{}` overlaps with `{}` from {}",
+                    left_repo.path, right_repo.path, right_loaded.source
+                ),
+            });
+            problems.push(ConfigValidationProblem {
+                source: right_loaded.source.clone(),
+                rule_id: None,
+                message: format!(
+                    "catalog repo path `{}` overlaps with `{}` from {}",
+                    right_repo.path, left_repo.path, left_loaded.source
+                ),
+            });
+        }
+    }
+
+    problems.sort_by(|left, right| {
+        (&left.source, &left.rule_id, &left.message).cmp(&(
+            &right.source,
+            &right.rule_id,
+            &right.message,
+        ))
+    });
+
+    problems
+}
+
+pub fn validate_loaded_ownership_configs(
+    loaded_configs: &[LoadedOwnershipConfig],
+    catalog_configs: &[LoadedCatalogConfig],
+) -> Vec<ConfigValidationProblem> {
+    let mut problems = Vec::new();
+    let mut domain_sources = BTreeMap::<String, Vec<&LoadedOwnershipConfig>>::new();
+    let mut catalog_repo_ids = BTreeSet::<String>::new();
+
+    for loaded_catalog in catalog_configs {
+        for repo in &loaded_catalog.catalog.repos {
+            if !repo.id.is_empty() {
+                catalog_repo_ids.insert(repo.id.clone());
+            }
+        }
+    }
+
+    for loaded in loaded_configs {
+        for domain in &loaded.ownership.domains {
+            if !domain.id.is_empty() {
+                domain_sources
+                    .entry(domain.id.clone())
+                    .or_default()
+                    .push(loaded);
+            }
+
+            if !domain.owner_repo.is_empty() && !catalog_repo_ids.contains(&domain.owner_repo) {
+                problems.push(ConfigValidationProblem {
+                    source: loaded.source.clone(),
+                    rule_id: None,
+                    message: format!(
+                        "ownership domain `{}` references unknown ownerRepo `{}`",
+                        domain.id, domain.owner_repo
+                    ),
+                });
+            }
+
+            for repo_id in &domain.non_owner_repos {
+                if !catalog_repo_ids.contains(repo_id) {
+                    problems.push(ConfigValidationProblem {
+                        source: loaded.source.clone(),
+                        rule_id: None,
+                        message: format!(
+                            "ownership domain `{}` references unknown nonOwnerRepo `{}`",
+                            domain.id, repo_id
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    for (domain_id, entries) in domain_sources {
+        if entries.len() < 2 {
+            continue;
+        }
+
+        let all_sources = entries
+            .iter()
+            .map(|entry| entry.source.as_str())
+            .collect::<Vec<_>>();
+
+        for entry in entries {
+            let other_sources = all_sources
+                .iter()
+                .copied()
+                .filter(|source| *source != entry.source)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let other_sources = if other_sources.is_empty() {
+                entry.source.clone()
+            } else {
+                other_sources
+            };
+
+            problems.push(ConfigValidationProblem {
+                source: entry.source.clone(),
+                rule_id: None,
+                message: format!(
+                    "ownership domain id `{domain_id}` is duplicated across configs: {other_sources}"
+                ),
+            });
+        }
+    }
+
+    problems.sort_by(|left, right| {
+        (&left.source, &left.rule_id, &left.message).cmp(&(
+            &right.source,
+            &right.rule_id,
+            &right.message,
+        ))
+    });
+
+    problems
+}
+
+pub fn analyze_ownership_paths(
+    tracked_paths: &[String],
+    loaded_configs: &[LoadedOwnershipConfig],
+) -> OwnershipAnalysis {
+    let mut analyses = Vec::new();
+    let mut conflicts = Vec::new();
+    let mut overlaps = Vec::new();
+
+    for tracked_path in tracked_paths {
+        let mut matches = Vec::<OwnershipDomainMatch>::new();
+
+        for loaded in loaded_configs {
+            for domain in &loaded.ownership.domains {
+                let matched_include = domain
+                    .paths
+                    .include
+                    .iter()
+                    .map(|pattern| resolve_rule_path(&loaded.base_dir, pattern))
+                    .filter(|pattern| crate::rules::matches_pattern(tracked_path, pattern))
+                    .max_by(ownership_pattern_specificity_cmp);
+
+                let Some(matched_include) = matched_include else {
+                    continue;
+                };
+
+                let excluded = domain
+                    .paths
+                    .exclude
+                    .iter()
+                    .map(|pattern| resolve_rule_path(&loaded.base_dir, pattern))
+                    .any(|pattern| crate::rules::matches_pattern(tracked_path, &pattern));
+                if excluded {
+                    continue;
+                }
+
+                let (static_prefix_len, wildcard_count) =
+                    ownership_pattern_specificity(&matched_include);
+
+                matches.push(OwnershipDomainMatch {
+                    source: loaded.source.clone(),
+                    base_dir: loaded.base_dir.clone(),
+                    domain_id: domain.id.clone(),
+                    owner_repo: domain.owner_repo.clone(),
+                    matched_include,
+                    static_prefix_len,
+                    wildcard_count,
+                });
+            }
+        }
+
+        if matches.is_empty() {
+            continue;
+        }
+
+        matches.sort_by(ownership_domain_match_cmp);
+        let selected = matches[0].clone();
+        let owner_repos = matches
+            .iter()
+            .map(|entry| entry.owner_repo.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let domain_ids = matches
+            .iter()
+            .map(|entry| entry.domain_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let has_conflict = owner_repos.len() > 1;
+        let has_overlap = !has_conflict && matches.len() > 1;
+
+        if has_conflict {
+            conflicts.push(OwnershipConflict {
+                path: tracked_path.clone(),
+                owner_repos,
+                domain_ids,
+            });
+        } else if has_overlap {
+            overlaps.push(OwnershipOverlap {
+                path: tracked_path.clone(),
+                owner_repo: selected.owner_repo.clone(),
+                domain_ids,
+                selected_domain_id: selected.domain_id.clone(),
+            });
+        }
+
+        analyses.push(OwnershipPathAnalysis {
+            path: tracked_path.clone(),
+            matches,
+            selected,
+            has_conflict,
+            has_overlap,
+        });
+    }
+
+    OwnershipAnalysis {
+        paths: analyses,
+        conflicts,
+        overlaps,
+    }
+}
+
+pub fn validate_ownership_path_conflicts(
+    analysis: &OwnershipAnalysis,
+) -> Vec<ConfigValidationProblem> {
+    let mut problems = Vec::new();
+
+    for path_analysis in &analysis.paths {
+        if !path_analysis.has_conflict {
+            continue;
+        }
+
+        let conflicting_owners = path_analysis
+            .matches
+            .iter()
+            .map(|entry| entry.owner_repo.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        for entry in &path_analysis.matches {
+            problems.push(ConfigValidationProblem {
+                source: entry.source.clone(),
+                rule_id: None,
+                message: format!(
+                    "ownership conflict: tracked path `{}` matches domain `{}` (ownerRepo `{}`) but conflicting ownerRepos are present: {}",
+                    path_analysis.path,
+                    entry.domain_id,
+                    entry.owner_repo,
+                    conflicting_owners
+                ),
+            });
+        }
+    }
+
+    problems.sort_by(|left, right| {
+        (&left.source, &left.rule_id, &left.message).cmp(&(
+            &right.source,
+            &right.rule_id,
+            &right.message,
+        ))
+    });
+
+    problems
+}
+
 fn validate_parsed_configs(parsed_files: &[ParsedImpactFile]) -> Vec<ConfigValidationProblem> {
     let mut problems = Vec::new();
 
@@ -1606,6 +2191,14 @@ fn validate_top_level_blocks(
 
     if let Some(routing) = parsed.parsed.routing.as_ref() {
         validate_routing_block(&parsed.descriptor.rel_path, &routing.intents, problems);
+    }
+
+    if let Some(catalog) = parsed.parsed.catalog.as_ref() {
+        validate_catalog_block(&parsed.descriptor.rel_path, &catalog.repos, problems);
+    }
+
+    if let Some(ownership) = parsed.parsed.ownership.as_ref() {
+        validate_ownership_block(&parsed.descriptor.rel_path, &ownership.domains, problems);
     }
 
     for rule in &parsed.parsed.rules {
@@ -1961,6 +2554,183 @@ fn validate_routing_block(
     }
 }
 
+fn validate_catalog_block(
+    source: &str,
+    repos: &[CatalogRepo],
+    problems: &mut Vec<ConfigValidationProblem>,
+) {
+    if repos.is_empty() {
+        problems.push(ConfigValidationProblem {
+            source: source.into(),
+            rule_id: None,
+            message: "catalog.repos must define at least one repo".into(),
+        });
+        return;
+    }
+
+    for (index, repo) in repos.iter().enumerate() {
+        if repo.id.trim().is_empty() {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!("catalog.repos[{index}].id must not be empty"),
+            });
+        }
+
+        if let Some(message) = validate_catalog_repo_path(&repo.path) {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!("catalog.repos[{index}].path {message}"),
+            });
+        }
+
+        if let Some(canonical_repo) = repo.canonical_repo.as_ref()
+            && canonical_repo.trim().is_empty()
+        {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!(
+                    "catalog.repos[{index}].canonicalRepo must not be empty when provided"
+                ),
+            });
+        }
+
+        if let Some(path) = repo.entry_doc.as_ref()
+            && let Some(message) = validate_required_doc_path(path)
+        {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!("catalog.repos[{index}].entryDoc {message}"),
+            });
+        }
+
+        if let Some(path) = repo.branch_policy_doc.as_ref()
+            && let Some(message) = validate_required_doc_path(path)
+        {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!("catalog.repos[{index}].branchPolicyDoc {message}"),
+            });
+        }
+
+        for (doc_index, path) in repo.workflow_docs.iter().enumerate() {
+            if let Some(message) = validate_required_doc_path(path) {
+                problems.push(ConfigValidationProblem {
+                    source: source.into(),
+                    rule_id: None,
+                    message: format!("catalog.repos[{index}].workflowDocs[{doc_index}] {message}"),
+                });
+            }
+        }
+
+        for (doc_index, path) in repo.integration_docs.iter().enumerate() {
+            if let Some(message) = validate_required_doc_path(path) {
+                problems.push(ConfigValidationProblem {
+                    source: source.into(),
+                    rule_id: None,
+                    message: format!(
+                        "catalog.repos[{index}].integrationDocs[{doc_index}] {message}"
+                    ),
+                });
+            }
+        }
+    }
+}
+
+fn validate_ownership_block(
+    source: &str,
+    domains: &[OwnershipDomain],
+    problems: &mut Vec<ConfigValidationProblem>,
+) {
+    if domains.is_empty() {
+        problems.push(ConfigValidationProblem {
+            source: source.into(),
+            rule_id: None,
+            message: "ownership.domains must define at least one domain".into(),
+        });
+        return;
+    }
+
+    for (index, domain) in domains.iter().enumerate() {
+        if domain.id.trim().is_empty() {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!("ownership.domains[{index}].id must not be empty"),
+            });
+        }
+
+        if domain.paths.include.is_empty() {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!(
+                    "ownership.domains[{index}].paths.include must define at least one path"
+                ),
+            });
+        }
+
+        for (path_index, pattern) in domain.paths.include.iter().enumerate() {
+            if let Some(message) = validate_trigger_path(pattern) {
+                problems.push(ConfigValidationProblem {
+                    source: source.into(),
+                    rule_id: None,
+                    message: format!(
+                        "ownership.domains[{index}].paths.include[{path_index}] {message}"
+                    ),
+                });
+            }
+        }
+
+        for (path_index, pattern) in domain.paths.exclude.iter().enumerate() {
+            if let Some(message) = validate_trigger_path(pattern) {
+                problems.push(ConfigValidationProblem {
+                    source: source.into(),
+                    rule_id: None,
+                    message: format!(
+                        "ownership.domains[{index}].paths.exclude[{path_index}] {message}"
+                    ),
+                });
+            }
+        }
+
+        if domain.owner_repo.trim().is_empty() {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!("ownership.domains[{index}].ownerRepo must not be empty"),
+            });
+        }
+
+        if domain.non_owner_repos.contains(&domain.owner_repo) {
+            problems.push(ConfigValidationProblem {
+                source: source.into(),
+                rule_id: None,
+                message: format!(
+                    "ownership domain `{}` must not list ownerRepo `{}` inside nonOwnerRepos",
+                    domain.id, domain.owner_repo
+                ),
+            });
+        }
+
+        for (repo_index, repo_id) in domain.non_owner_repos.iter().enumerate() {
+            if repo_id.trim().is_empty() {
+                problems.push(ConfigValidationProblem {
+                    source: source.into(),
+                    rule_id: None,
+                    message: format!(
+                        "ownership.domains[{index}].nonOwnerRepos[{repo_index}] must not be empty"
+                    ),
+                });
+            }
+        }
+    }
+}
+
 fn validate_single_rule(
     rule: &Rule,
     source: &str,
@@ -2070,6 +2840,62 @@ fn validate_required_doc_path(path: &str) -> Option<String> {
     Some(base_message)
 }
 
+fn validate_catalog_repo_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+
+    if trimmed == "." {
+        return None;
+    }
+
+    validate_repo_relative_path(trimmed, false)
+}
+
+fn catalog_repo_paths_overlap(left: &str, right: &str) -> bool {
+    if left == "." || right == "." {
+        return true;
+    }
+
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn ownership_pattern_specificity(pattern: &str) -> (usize, usize) {
+    let static_prefix_len = pattern
+        .chars()
+        .take_while(|ch| *ch != '*' && *ch != '?')
+        .count();
+    let wildcard_count = pattern.chars().filter(|ch| matches!(ch, '*' | '?')).count();
+    (static_prefix_len, wildcard_count)
+}
+
+fn ownership_pattern_specificity_cmp(left: &String, right: &String) -> std::cmp::Ordering {
+    let left_specificity = ownership_pattern_specificity(left);
+    let right_specificity = ownership_pattern_specificity(right);
+
+    right_specificity
+        .0
+        .cmp(&left_specificity.0)
+        .then_with(|| left_specificity.1.cmp(&right_specificity.1))
+        .then_with(|| left.cmp(right))
+}
+
+fn ownership_domain_match_cmp(
+    left: &OwnershipDomainMatch,
+    right: &OwnershipDomainMatch,
+) -> std::cmp::Ordering {
+    right
+        .static_prefix_len
+        .cmp(&left.static_prefix_len)
+        .then_with(|| left.wildcard_count.cmp(&right.wildcard_count))
+        .then_with(|| left.domain_id.cmp(&right.domain_id))
+        .then_with(|| left.source.cmp(&right.source))
+}
+
 fn validate_repo_relative_path(path: &str, allow_glob: bool) -> Option<String> {
     let trimmed = path.trim();
 
@@ -2147,10 +2973,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        CONFIG_FILE, DOC_ROOT_DIR, ImpactLayout, RuleOriginKind, detect_impact_layout,
-        load_effective_configs, load_impact_files, load_routing_configs, normalize_path,
-        resolve_rule_path, root_dir_from_option, validate_config_graph,
-        validate_loaded_routing_configs, validate_loaded_rules,
+        CONFIG_FILE, DOC_ROOT_DIR, ImpactLayout, RuleOriginKind, analyze_ownership_paths,
+        detect_impact_layout, load_catalog_configs, load_effective_configs, load_impact_files,
+        load_ownership_configs, load_routing_configs, normalize_path, resolve_rule_path,
+        root_dir_from_option, validate_config_graph, validate_loaded_catalog_configs,
+        validate_loaded_ownership_configs, validate_loaded_routing_configs, validate_loaded_rules,
+        validate_ownership_path_conflicts,
     };
 
     fn temp_dir(prefix: &str) -> PathBuf {
@@ -2567,6 +3395,331 @@ rules: []
 
         assert!(messages.iter().any(|message| {
             message.contains("routing intent alias `payments` is duplicated across configs")
+        }));
+    }
+
+    #[test]
+    fn load_catalog_configs_normalizes_doc_pointers_and_repo_root() {
+        let root = temp_dir("docpact-catalog-normalize");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: repo
+catalog:
+  repos:
+    - id: sample-sdk
+      path: .
+      canonicalRepo: "  Biaoo/sample-sdk  "
+      entryDoc: ./README.md
+      branchPolicyDoc: docs/branch-policy.md
+      workflowDocs:
+        - ./docs/workflows/local-dev.md
+        - docs/workflows/local-dev.md
+        - docs/workflows/release.md
+      integrationDocs:
+        - docs/workflows/workspace-integration.md
+        - ./docs/workflows/workspace-integration.md
+rules: []
+"#,
+        )
+        .expect("repo config");
+
+        let loaded = load_catalog_configs(&root, None).expect("catalog configs");
+        let catalog = &loaded[0].catalog;
+        let repo = &catalog.repos[0];
+
+        assert_eq!(repo.path, ".");
+        assert_eq!(repo.canonical_repo.as_deref(), Some("Biaoo/sample-sdk"));
+        assert_eq!(repo.entry_doc.as_deref(), Some("README.md"));
+        assert_eq!(
+            repo.workflow_docs,
+            vec!["docs/workflows/local-dev.md", "docs/workflows/release.md"]
+        );
+        assert_eq!(
+            repo.integration_docs,
+            vec!["docs/workflows/workspace-integration.md"]
+        );
+    }
+
+    #[test]
+    fn strict_validation_reports_invalid_catalog_pointers_and_overlapping_roots() {
+        let root = temp_dir("docpact-catalog-invalid");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root dir");
+        fs::create_dir_all(root.join(format!("sample-sdk/{DOC_ROOT_DIR}"))).expect("child doc dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+catalog:
+  repos:
+    - id: app
+      path: apps
+      entryDoc: docs/*.md
+    - id: nested
+      path: apps/web
+rules: []
+"#,
+        )
+        .expect("workspace config");
+
+        fs::write(
+            root.join(format!("sample-sdk/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+catalog:
+  repos:
+    - id: app
+      path: services/api
+rules: []
+"#,
+        )
+        .expect("child config");
+
+        let graph_problems = validate_config_graph(&root, None).expect("graph problems");
+        assert!(graph_problems.iter().any(|problem| {
+            problem
+                .message
+                .contains("catalog.repos[0].entryDoc must be an exact document path, not a glob")
+        }));
+
+        let catalog_configs = load_catalog_configs(&root, None).expect("catalog configs");
+        let loaded_problems = validate_loaded_catalog_configs(&catalog_configs);
+        let messages = loaded_problems
+            .iter()
+            .map(|problem| problem.message.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(messages.iter().any(|message| {
+            message.contains("catalog repo id `app` is duplicated across configs")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains("catalog repo path `apps` overlaps with `apps/web`")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains("catalog repo path `apps/web` overlaps with `apps`")
+        }));
+    }
+
+    #[test]
+    fn load_ownership_configs_normalizes_patterns_and_repo_references() {
+        let root = temp_dir("docpact-ownership-normalize");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: repo
+ownership:
+  domains:
+    - id: " payments "
+      paths:
+        include:
+          - ./src/payments/**
+          - src/payments/**
+        exclude:
+          - ./src/payments/generated/**
+      ownerRepo: " sample-sdk "
+      nonOwnerRepos:
+        - edge
+        - edge
+        - next
+rules: []
+"#,
+        )
+        .expect("repo config");
+
+        let loaded = load_ownership_configs(&root, None).expect("ownership configs");
+        let domain = &loaded[0].ownership.domains[0];
+
+        assert_eq!(domain.id, "payments");
+        assert_eq!(domain.paths.include, vec!["src/payments/**"]);
+        assert_eq!(domain.paths.exclude, vec!["src/payments/generated/**"]);
+        assert_eq!(domain.owner_repo, "sample-sdk");
+        assert_eq!(domain.non_owner_repos, vec!["edge", "next"]);
+    }
+
+    #[test]
+    fn strict_validation_reports_invalid_ownership_references_and_duplicate_ids() {
+        let root = temp_dir("docpact-ownership-invalid");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root dir");
+        fs::create_dir_all(root.join(format!("sample-sdk/{DOC_ROOT_DIR}"))).expect("child doc dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+catalog:
+  repos:
+    - id: app
+      path: apps/app
+    - id: web
+      path: apps/web
+ownership:
+  domains:
+    - id: payments
+      paths:
+        include:
+          - src/***
+      ownerRepo: app
+      nonOwnerRepos:
+        - app
+        - missing
+    - id: checkout
+      paths:
+        include: []
+      ownerRepo: missing
+rules: []
+"#,
+        )
+        .expect("workspace config");
+
+        fs::write(
+            root.join(format!("sample-sdk/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+ownership:
+  domains:
+    - id: payments
+      paths:
+        include:
+          - src/web/**
+      ownerRepo: web
+rules: []
+"#,
+        )
+        .expect("child config");
+
+        let graph_problems = validate_config_graph(&root, None).expect("graph problems");
+        assert!(graph_problems.iter().any(|problem| {
+            problem
+                .message
+                .contains("ownership.domains[0].paths.include[0] contains malformed glob segment")
+        }));
+        assert!(graph_problems.iter().any(|problem| {
+            problem.message.contains(
+                "ownership domain `payments` must not list ownerRepo `app` inside nonOwnerRepos",
+            )
+        }));
+        assert!(graph_problems.iter().any(|problem| {
+            problem
+                .message
+                .contains("ownership.domains[1].paths.include must define at least one path")
+        }));
+
+        let ownership_configs = load_ownership_configs(&root, None).expect("ownership configs");
+        let catalog_configs = load_catalog_configs(&root, None).expect("catalog configs");
+        let loaded_problems =
+            validate_loaded_ownership_configs(&ownership_configs, &catalog_configs);
+        let messages = loaded_problems
+            .iter()
+            .map(|problem| problem.message.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(messages.iter().any(|message| {
+            message
+                .contains("ownership domain `payments` references unknown nonOwnerRepo `missing`")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains("ownership domain `checkout` references unknown ownerRepo `missing`")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains("ownership domain id `payments` is duplicated across configs")
+        }));
+    }
+
+    #[test]
+    fn ownership_analysis_reports_conflicts_and_overlaps_and_selects_most_specific_domain() {
+        let root = temp_dir("docpact-ownership-analysis");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root dir");
+        fs::create_dir_all(root.join(format!("service/{DOC_ROOT_DIR}"))).expect("service doc dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+ownership:
+  domains:
+    - id: broad-root
+      paths:
+        include:
+          - service/src/**
+      ownerRepo: app
+    - id: payments-specific
+      paths:
+        include:
+          - service/src/payments/**
+      ownerRepo: app
+    - id: conflicts
+      paths:
+        include:
+          - service/src/conflict/**
+      ownerRepo: edge
+rules: []
+"#,
+        )
+        .expect("root config");
+
+        fs::write(
+            root.join(format!("service/{CONFIG_FILE}")),
+            r#"
+version: 1
+layout: repo
+ownership:
+  domains:
+    - id: child-conflict
+      paths:
+        include:
+          - src/conflict/**
+      ownerRepo: web
+rules: []
+"#,
+        )
+        .expect("child config");
+
+        let ownership_configs = load_ownership_configs(&root, None).expect("ownership configs");
+        let analysis = analyze_ownership_paths(
+            &[
+                "service/src/payments/charge.ts".into(),
+                "service/src/conflict/index.ts".into(),
+            ],
+            &ownership_configs,
+        );
+
+        assert_eq!(analysis.overlaps.len(), 1);
+        assert_eq!(analysis.conflicts.len(), 1);
+        assert_eq!(analysis.overlaps[0].selected_domain_id, "payments-specific");
+        assert_eq!(
+            analysis.conflicts[0].owner_repos,
+            vec!["app", "edge", "web"]
+        );
+
+        let selected = analysis
+            .paths
+            .iter()
+            .find(|entry| entry.path == "service/src/payments/charge.ts")
+            .expect("payments path should exist");
+        assert_eq!(selected.selected.domain_id, "payments-specific");
+
+        let conflict_problems = validate_ownership_path_conflicts(&analysis);
+        assert!(conflict_problems.iter().any(|problem| {
+            problem
+                .message
+                .contains("tracked path `service/src/conflict/index.ts`")
+        }));
+        assert!(conflict_problems.iter().any(|problem| {
+            problem
+                .message
+                .contains("conflicting ownerRepos are present: app, edge, web")
         }));
     }
 

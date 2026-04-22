@@ -7,10 +7,11 @@ use serde::Serialize;
 use crate::AppExit;
 use crate::cli::{DoctorArgs, DoctorOutputFormat};
 use crate::config::{
-    CONFIG_FILE, ConfigBlockSourceKind, EffectiveConfig, ImpactLayout, detect_impact_layout,
-    load_effective_configs, normalize_path, path_relative_to, resolve_rule_path,
-    root_dir_from_option,
+    CONFIG_FILE, ConfigBlockSourceKind, EffectiveConfig, ImpactLayout, analyze_ownership_paths,
+    detect_impact_layout, load_catalog_configs, load_effective_configs, load_ownership_configs,
+    normalize_path, path_relative_to, resolve_rule_path, root_dir_from_option,
 };
+use crate::git::get_tracked_paths;
 
 pub const DOCTOR_SCHEMA_VERSION: &str = "docpact.doctor.v1";
 
@@ -21,6 +22,9 @@ const CODE_MISSING_COVERAGE_SCOPE: &str = "missing-coverage-scope";
 const CODE_MISSING_GOVERNED_DOCS: &str = "missing-governed-docs";
 const CODE_MISSING_DOC_INVENTORY: &str = "missing-doc-inventory";
 const CODE_MISSING_FRESHNESS_CONFIG: &str = "missing-freshness-config";
+const CODE_OWNERSHIP_OVERLAP: &str = "ownership-overlap";
+const CODE_OWNERSHIP_CONFLICT: &str = "ownership-conflict";
+const CODE_OWNERSHIP_ANALYSIS_UNAVAILABLE: &str = "ownership-analysis-unavailable";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct DoctorReport {
@@ -39,6 +43,10 @@ pub struct DoctorSummary {
     pub effective_config_count: usize,
     pub inherited_config_count: usize,
     pub rule_count: usize,
+    pub catalog_repo_count: usize,
+    pub ownership_domain_count: usize,
+    pub ownership_overlap_count: usize,
+    pub ownership_conflict_count: usize,
     pub coverage_configured: bool,
     pub routing_configured: bool,
     pub doc_inventory_configured: bool,
@@ -52,6 +60,8 @@ pub struct DoctorConfig {
     pub source: String,
     pub base_dir: String,
     pub rule_count: usize,
+    pub catalog_repo_count: usize,
+    pub ownership_domain_count: usize,
     pub governed_doc_count: usize,
     pub inheritance_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -108,6 +118,10 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
                 effective_config_count: 0,
                 inherited_config_count: 0,
                 rule_count: 0,
+                catalog_repo_count: 0,
+                ownership_domain_count: 0,
+                ownership_overlap_count: 0,
+                ownership_conflict_count: 0,
                 coverage_configured: false,
                 routing_configured: false,
                 doc_inventory_configured: false,
@@ -140,6 +154,10 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
                     effective_config_count: 0,
                     inherited_config_count: 0,
                     rule_count: 0,
+                    catalog_repo_count: 0,
+                    ownership_domain_count: 0,
+                    ownership_overlap_count: 0,
+                    ownership_conflict_count: 0,
                     coverage_configured: false,
                     routing_configured: false,
                     doc_inventory_configured: false,
@@ -170,6 +188,10 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
                     effective_config_count: 0,
                     inherited_config_count: 0,
                     rule_count: 0,
+                    catalog_repo_count: 0,
+                    ownership_domain_count: 0,
+                    ownership_overlap_count: 0,
+                    ownership_conflict_count: 0,
                     coverage_configured: false,
                     routing_configured: false,
                     doc_inventory_configured: false,
@@ -188,10 +210,20 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
         }
     };
 
-    let configs = build_doctor_configs(&effective_configs);
+    let catalog_configs = load_catalog_configs(&root_dir, args.config.as_deref())?;
+    let ownership_configs = load_ownership_configs(&root_dir, args.config.as_deref())?;
+    let configs = build_doctor_configs(&effective_configs, &catalog_configs, &ownership_configs);
     let rule_count = effective_configs
         .iter()
         .map(|config| config.rules.len())
+        .sum();
+    let catalog_repo_count = catalog_configs
+        .iter()
+        .map(|config| config.catalog.repos.len())
+        .sum();
+    let ownership_domain_count = ownership_configs
+        .iter()
+        .map(|config| config.ownership.domains.len())
         .sum();
     let governed_doc_count = effective_configs
         .iter()
@@ -227,6 +259,22 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
         .iter()
         .filter(|config| config.inheritance.is_some())
         .count();
+    let ownership_analysis = if ownership_domain_count > 0 {
+        match get_tracked_paths(&root_dir) {
+            Ok(tracked_paths) => Some(analyze_ownership_paths(&tracked_paths, &ownership_configs)),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let ownership_overlap_count = ownership_analysis
+        .as_ref()
+        .map(|analysis| analysis.overlaps.len())
+        .unwrap_or(0);
+    let ownership_conflict_count = ownership_analysis
+        .as_ref()
+        .map(|analysis| analysis.conflicts.len())
+        .unwrap_or(0);
 
     let summary = DoctorSummary {
         config_present: true,
@@ -234,6 +282,10 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
         effective_config_count: effective_configs.len(),
         inherited_config_count,
         rule_count,
+        catalog_repo_count,
+        ownership_domain_count,
+        ownership_overlap_count,
+        ownership_conflict_count,
         coverage_configured,
         routing_configured,
         doc_inventory_configured,
@@ -293,8 +345,60 @@ pub fn execute(args: &DoctorArgs) -> Result<DoctorReport> {
                 message:
                     "No explicit freshness config is present; repository freshness audit falls back to default thresholds."
                         .into(),
-                source: config_source,
+                source: config_source.clone(),
             });
+        }
+
+        if summary.ownership_domain_count > 0 {
+            match ownership_analysis {
+                Some(ref analysis) => {
+                    if !analysis.conflicts.is_empty() {
+                        findings.push(DoctorFinding {
+                            code: CODE_OWNERSHIP_CONFLICT.into(),
+                            severity: DoctorSeverity::Error.as_str().into(),
+                            message: format!(
+                                "{} tracked path(s) match ownership domains with conflicting ownerRepo values. Examples: {}",
+                                analysis.conflicts.len(),
+                                summarize_paths(
+                                    analysis
+                                        .conflicts
+                                        .iter()
+                                        .map(|conflict| conflict.path.as_str())
+                                        .collect::<Vec<_>>()
+                                )
+                            ),
+                            source: config_source.clone(),
+                        });
+                    }
+
+                    if !analysis.overlaps.is_empty() {
+                        findings.push(DoctorFinding {
+                            code: CODE_OWNERSHIP_OVERLAP.into(),
+                            severity: DoctorSeverity::Warn.as_str().into(),
+                            message: format!(
+                                "{} tracked path(s) match multiple ownership domains with the same ownerRepo. Examples: {}",
+                                analysis.overlaps.len(),
+                                summarize_paths(
+                                    analysis
+                                        .overlaps
+                                        .iter()
+                                        .map(|overlap| overlap.path.as_str())
+                                        .collect::<Vec<_>>()
+                                )
+                            ),
+                            source: config_source.clone(),
+                        });
+                    }
+                }
+                None => findings.push(DoctorFinding {
+                    code: CODE_OWNERSHIP_ANALYSIS_UNAVAILABLE.into(),
+                    severity: DoctorSeverity::Warn.as_str().into(),
+                    message:
+                        "Ownership analysis could not read tracked files from git, so overlap/conflict checks were skipped."
+                            .into(),
+                    source: config_source.clone(),
+                }),
+            }
         }
     }
 
@@ -338,12 +442,16 @@ fn emit_report(report: &DoctorReport, format: DoctorOutputFormat) {
 fn emit_text_report(report: &DoctorReport) {
     println!("Docpact doctor:");
     println!(
-        "Summary: config_present={}, layout={}, effective_configs={}, inherited_configs={}, rule_count={}, coverage_configured={}, routing_configured={}, doc_inventory_configured={}, freshness_configured={}, routing_intents={}, governed_doc_count={}",
+        "Summary: config_present={}, layout={}, effective_configs={}, inherited_configs={}, rule_count={}, catalog_repos={}, ownership_domains={}, ownership_overlaps={}, ownership_conflicts={}, coverage_configured={}, routing_configured={}, doc_inventory_configured={}, freshness_configured={}, routing_intents={}, governed_doc_count={}",
         report.summary.config_present,
         report.summary.layout,
         report.summary.effective_config_count,
         report.summary.inherited_config_count,
         report.summary.rule_count,
+        report.summary.catalog_repo_count,
+        report.summary.ownership_domain_count,
+        report.summary.ownership_overlap_count,
+        report.summary.ownership_conflict_count,
         report.summary.coverage_configured,
         report.summary.routing_configured,
         report.summary.doc_inventory_configured,
@@ -357,7 +465,7 @@ fn emit_text_report(report: &DoctorReport) {
     } else {
         for config in &report.configs {
             println!(
-                "- source={} base_dir={} inherited={} profile={} rules={} governed_docs={} coverage_resolution={} routing_resolution={} doc_inventory_resolution={} freshness_resolution={} routing_intents={} overrides(add={},replace={},disable={})",
+                "- source={} base_dir={} inherited={} profile={} rules={} catalog_repos={} ownership_domains={} governed_docs={} coverage_resolution={} routing_resolution={} doc_inventory_resolution={} freshness_resolution={} routing_intents={} overrides(add={},replace={},disable={})",
                 config.source,
                 if config.base_dir.is_empty() {
                     ".".to_string()
@@ -370,6 +478,8 @@ fn emit_text_report(report: &DoctorReport) {
                     .clone()
                     .unwrap_or_else(|| "-".into()),
                 config.rule_count,
+                config.catalog_repo_count,
+                config.ownership_domain_count,
                 config.governed_doc_count,
                 config.coverage_resolution,
                 config.routing_resolution,
@@ -431,7 +541,29 @@ fn extract_config_source(message: &str) -> Option<String> {
     None
 }
 
-fn build_doctor_configs(effective_configs: &[EffectiveConfig]) -> Vec<DoctorConfig> {
+fn summarize_paths(paths: Vec<&str>) -> String {
+    let examples = paths.into_iter().take(3).collect::<Vec<_>>();
+    if examples.is_empty() {
+        "-".into()
+    } else {
+        examples.join(", ")
+    }
+}
+
+fn build_doctor_configs(
+    effective_configs: &[EffectiveConfig],
+    catalog_configs: &[crate::config::LoadedCatalogConfig],
+    ownership_configs: &[crate::config::LoadedOwnershipConfig],
+) -> Vec<DoctorConfig> {
+    let catalog_counts = catalog_configs
+        .iter()
+        .map(|config| (config.source.as_str(), config.catalog.repos.len()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let ownership_counts = ownership_configs
+        .iter()
+        .map(|config| (config.source.as_str(), config.ownership.domains.len()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
     effective_configs
         .iter()
         .map(|config| {
@@ -452,6 +584,8 @@ fn build_doctor_configs(effective_configs: &[EffectiveConfig]) -> Vec<DoctorConf
                 source: config.source.clone(),
                 base_dir: config.base_dir.clone(),
                 rule_count: config.rules.len(),
+                catalog_repo_count: *catalog_counts.get(config.source.as_str()).unwrap_or(&0),
+                ownership_domain_count: *ownership_counts.get(config.source.as_str()).unwrap_or(&0),
                 governed_doc_count,
                 inheritance_enabled: config.inheritance.is_some(),
                 workspace_profile: config
@@ -492,12 +626,13 @@ fn build_doctor_configs(effective_configs: &[EffectiveConfig]) -> Vec<DoctorConf
 mod tests {
     use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
         CODE_CONFIG_LOAD_FAILED, CODE_EMPTY_RULE_GRAPH, CODE_MISSING_CONFIG,
         CODE_MISSING_COVERAGE_SCOPE, CODE_MISSING_DOC_INVENTORY, CODE_MISSING_FRESHNESS_CONFIG,
-        CODE_MISSING_GOVERNED_DOCS, DOCTOR_SCHEMA_VERSION, execute,
+        CODE_MISSING_GOVERNED_DOCS, CODE_OWNERSHIP_OVERLAP, DOCTOR_SCHEMA_VERSION, execute,
     };
     use crate::cli::{DoctorArgs, DoctorOutputFormat};
     use crate::config::CONFIG_FILE;
@@ -518,6 +653,31 @@ mod tests {
             config: None,
             format: DoctorOutputFormat::Json,
         }
+    }
+
+    fn git(root: &std::path::Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("git stdout should be utf-8")
+            .trim()
+            .to_string()
+    }
+
+    fn init_git_repo(root: &std::path::Path) {
+        fs::create_dir_all(root).expect("repo root should exist");
+        git(root, &["init"]);
+        git(root, &["config", "user.name", "Docpact Tests"]);
+        git(root, &["config", "user.email", "docpact@example.com"]);
     }
 
     #[test]
@@ -785,5 +945,60 @@ overrides:
         assert_eq!(service.doc_inventory_resolution, "override-replace");
         assert_eq!(service.freshness_resolution, "override-replace");
         assert_eq!(service.routing_intent_count, 2);
+    }
+
+    #[test]
+    fn doctor_surfaces_same_owner_ownership_overlap_as_warning() {
+        let root = temp_dir("docpact-doctor-ownership-overlap");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc root should exist");
+        fs::create_dir_all(root.join("src/payments")).expect("src dir should exist");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"version: 1
+layout: repo
+catalog:
+  repos:
+    - id: sample
+      path: .
+ownership:
+  domains:
+    - id: broad
+      paths:
+        include:
+          - src/**
+      ownerRepo: sample
+    - id: payments
+      paths:
+        include:
+          - src/payments/**
+      ownerRepo: sample
+rules:
+  - id: api-docs
+    scope: repo
+    repo: sample
+    triggers:
+      - path: src/**
+        kind: code
+    requiredDocs:
+      - path: README.md
+    reason: sample
+"#,
+        )
+        .expect("config should be written");
+        fs::write(root.join("src/payments/charge.ts"), "export const x = 1;\n")
+            .expect("tracked file should be written");
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-m", "Add tracked overlap sample"]);
+
+        let report = execute(&base_args(&root)).expect("doctor should execute");
+
+        assert_eq!(report.summary.ownership_domain_count, 2);
+        assert_eq!(report.summary.ownership_overlap_count, 1);
+        assert_eq!(report.summary.ownership_conflict_count, 0);
+        assert!(report.findings.iter().any(|finding| {
+            finding.code == CODE_OWNERSHIP_OVERLAP && finding.severity == "warn"
+        }));
     }
 }

@@ -2,6 +2,25 @@ version: 1
 layout: workspace
 lastReviewedAt: 2026-04-20
 lastReviewedCommit: example-workspace-config
+catalog:
+  repos:
+    - id: sample-sdk
+      path: sample-sdk
+      canonicalRepo: Biaoo/sample-sdk
+      entryDoc: AGENTS.md
+      branchPolicyDoc: docs/branch-policy.md
+      workflowDocs:
+        - docs/workflows/local-dev.md
+      integrationDocs:
+        - docs/workflows/workspace-integration.md
+      workspaceIntegrationRequired: true
+ownership:
+  domains:
+    - id: sample-sdk-api
+      paths:
+        include:
+          - sample-sdk/src/**
+      ownerRepo: sample-sdk
 coverage:
   include:
     - docs/**
