@@ -14,4 +14,4 @@
 - `review mark` suitability checked explicitly
 - Rule/routing escalation checked where stale signal looked suspicious
 - Validation commands prepared
-- Follow-up maintainer skill identified when the work is no longer document-focused
+- Follow-up maintainer workflow reference identified when the work is no longer document-focused

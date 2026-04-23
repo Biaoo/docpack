@@ -20,7 +20,8 @@
 ## Next Step
 
 - stay in direct workflow:
-- hand off to maintainer skill:
+- use internal failure-repair workflow:
+- hand off to `docpact-governance`:
 
 ## Notes
 

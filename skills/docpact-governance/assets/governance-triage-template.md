@@ -5,9 +5,9 @@
 - Primary class:
 - Secondary signals:
 
-## Recommended Official Skill
+## Recommended Workflow Reference
 
-- Skill:
+- Workflow:
 - Why this is the best fit:
 
 ## Minimum Inputs To Gather
@@ -15,14 +15,14 @@
 - Required commands:
 - Required files or reports:
 
-## Shared Remediation Check
+## Direct Workflow Return Check
 
-- Does this need `failure-repair` for one explicit finding?
+- Does this need the failure-repair workflow in `docpact` for one explicit finding?
 - If yes, which report and `diagnostic_id`?
 
 ## CLI Fallback
 
-- Is an official skill missing?
+- Is an internal workflow missing?
 - If yes, which CLI commands should be used next?
 
 ## Next Step

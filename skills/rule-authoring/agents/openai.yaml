@@ -1,4 +1,0 @@
-interface:
-  display_name: "Rule Authoring"
-  short_description: "Draft docpact governance rules."
-  default_prompt: "Use $rule-authoring to draft or revise a docpact rule based on uncovered paths or governance requirements."

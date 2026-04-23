@@ -1,13 +1,8 @@
----
-name: coverage-backfill
-description: Turn `docpact coverage` audit gaps into grouped, prioritized governance backfill tasks. Use when repository coverage reports uncovered hotspots, when a team needs to phase rule backfill instead of rewriting the whole rule graph at once, or when platform maintainers need to decide which uncovered areas should become new rules, existing-rule adjustments, or explicit coverage exclusions.
----
-
 # Coverage Backfill
 
 Convert coverage audit results into a staged backfill plan without exploding the rule graph.
 
-This skill is for planning and grouping uncovered areas. It is not the place to force every uncovered path into a new rule. Prefer structured coverage and rule outputs, aggregate by durable governance domains, and hand individual rule drafting back to `rule-authoring`.
+This workflow reference is for planning and grouping uncovered areas. It is not the place to force every uncovered path into a new rule. Prefer structured coverage and rule outputs, aggregate by durable governance domains, and hand individual rule drafting to the rule-authoring workflow reference.
 
 ## Workflow
 
@@ -56,8 +51,8 @@ Use `coverage.include/exclude` as the current governed path scope. If an uncover
 
 Read:
 
-- [references/uncovered-grouping-principles.md](./references/uncovered-grouping-principles.md)
-- [references/backfill-priority-standards.md](./references/backfill-priority-standards.md)
+- [../coverage-backfill/uncovered-grouping-principles.md](../coverage-backfill/uncovered-grouping-principles.md)
+- [../coverage-backfill/backfill-priority-standards.md](../coverage-backfill/backfill-priority-standards.md)
 
 ### 3. Group uncovered paths by governance domain
 
@@ -120,7 +115,7 @@ Every grouped backfill task should end in one of these next actions:
 - propose a coverage exclusion
 - collect missing governance context first
 
-When a group needs an actual rule draft, hand it off explicitly to `rule-authoring`.
+When a group needs an actual rule draft, switch explicitly to the rule-authoring workflow reference.
 
 Use:
 
@@ -129,15 +124,15 @@ docpact list-rules --root <repo> --format json
 docpact validate-config --root <repo> --strict
 ```
 
-and then route the specific group into the `rule-authoring` workflow.
+and then route the specific group into the rule-authoring workflow reference.
 
-Read [references/rule-authoring-handoff.md](./references/rule-authoring-handoff.md) before drafting the handoff summary.
+Read [../coverage-backfill/rule-authoring-handoff.md](../coverage-backfill/rule-authoring-handoff.md) before drafting the handoff summary.
 
 ### 6. End with a staged backfill plan
 
 Your final output should be a backlog-style plan, not a loose narrative.
 
-Use [assets/backfill-task-template.md](./assets/backfill-task-template.md) as the default output structure.
+Use [../../assets/coverage-backfill/backfill-task-template.md](../../assets/coverage-backfill/backfill-task-template.md) as the default output structure.
 
 Include, for each group:
 
@@ -149,7 +144,7 @@ Include, for each group:
 - whether the next step is `rule-authoring`, `coverage.exclude`, or more discovery
 - validation commands
 
-If helpful, compare against [assets/grouped-backfill-example.md](./assets/grouped-backfill-example.md) for the expected level of aggregation.
+If helpful, compare against [../../assets/coverage-backfill/grouped-backfill-example.md](../../assets/coverage-backfill/grouped-backfill-example.md) for the expected level of aggregation.
 
 ## Output Requirements
 
@@ -163,7 +158,7 @@ Always include:
   - `adjust-existing-rule`
   - `candidate-exclude`
   - `needs-more-context`
-- which groups should hand off to `rule-authoring`
+- which groups should switch to the rule-authoring workflow reference
 - the exact validation commands for the next step
 
-Do not generate final rule YAML for every group inside this skill. When the work becomes one concrete rule change, hand off to `rule-authoring`.
+Do not generate final rule YAML for every group inside this workflow. When the work becomes one concrete rule change, switch to the rule-authoring workflow reference.

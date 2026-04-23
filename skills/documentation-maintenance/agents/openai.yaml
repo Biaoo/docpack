@@ -1,4 +1,0 @@
-interface:
-  display_name: "Documentation Maintenance"
-  short_description: "Turn freshness signals into stale-doc remediation."
-  default_prompt: "Use $documentation-maintenance to turn freshness audit results into concrete stale-doc maintenance actions without weakening governance semantics."

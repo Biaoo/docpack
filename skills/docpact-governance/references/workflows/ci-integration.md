@@ -1,11 +1,6 @@
----
-name: ci-integration
-description: Design, review, or repair GitHub Actions integration for `docpact` using the published thin official action wrapper and existing CLI semantics. Use when a repository needs PR lint gating, baseline/waiver-aware adoption controls in CI, repository coverage audits, or scheduled freshness audits without inventing a second CI-only parameter model.
----
-
 # CI Integration
 
-Build `docpact` CI workflows around the already-published wrapper and the already-published CLI. This skill should help a maintainer decide which workflow shape fits the repository, produce or review workflow YAML, and keep adoption controls explicit.
+Build `docpact` CI workflows around the already-published wrapper and the already-published CLI. This workflow should help a maintainer decide which workflow shape fits the repository, produce or review workflow YAML, and keep adoption controls explicit.
 
 Do not create a second CI-facing syntax for `baseline`, `waivers`, `coverage`, `freshness`, or report artifacts. Keep the workflow thin and let the CLI remain the source of truth.
 
@@ -53,8 +48,8 @@ Default mapping:
 
 Read:
 
-- [references/workflow-trigger-selection.md](./references/workflow-trigger-selection.md)
-- [references/action-wrapper-boundaries.md](./references/action-wrapper-boundaries.md)
+- [../ci-integration/workflow-trigger-selection.md](../ci-integration/workflow-trigger-selection.md)
+- [../ci-integration/action-wrapper-boundaries.md](../ci-integration/action-wrapper-boundaries.md)
 
 ### 3. Keep the wrapper thin and CLI-first
 
@@ -107,7 +102,7 @@ args: >
   --waivers .docpact/waivers.yaml
 ```
 
-Read [references/adoption-controls-in-ci.md](./references/adoption-controls-in-ci.md) before recommending either one.
+Read [../ci-integration/adoption-controls-in-ci.md](../ci-integration/adoption-controls-in-ci.md) before recommending either one.
 
 Default guidance:
 
@@ -134,18 +129,11 @@ The workflow file remains responsible for artifact upload if desired. The action
 
 ### 6. End with concrete workflow snippets and review checks
 
-Use the official examples as references:
+Shape the final recommendation using:
 
-- `docpact/examples/github-actions/pr-lint.yml`
-- `docpact/examples/github-actions/pr-lint-with-adoption-controls.yml`
-- `docpact/examples/github-actions/coverage-audit.yml`
-- `docpact/examples/github-actions/freshness-audit.yml`
-
-Then shape the final recommendation using:
-
-- [assets/workflow-snippet-library.md](./assets/workflow-snippet-library.md)
-- [assets/ci-integration-checklist.md](./assets/ci-integration-checklist.md)
-- [assets/integration-review-template.md](./assets/integration-review-template.md)
+- [../../assets/ci-integration/workflow-snippet-library.md](../../assets/ci-integration/workflow-snippet-library.md)
+- [../../assets/ci-integration/ci-integration-checklist.md](../../assets/ci-integration/ci-integration-checklist.md)
+- [../../assets/ci-integration/integration-review-template.md](../../assets/ci-integration/integration-review-template.md)
 
 ## Output Requirements
 

@@ -9,7 +9,7 @@ Input:
 
 Route:
 
-- primary skill: `repository-onboarding`
+- primary workflow reference: `repository-onboarding`
 - evidence: `doctor`, then starter config drafting, then `validate-config --strict`
 
 Why:
@@ -25,7 +25,7 @@ Input:
 
 Route:
 
-- primary skill: `coverage-backfill`
+- primary workflow reference: `coverage-backfill`
 - evidence: `coverage --format json`
 
 Why:
@@ -40,7 +40,7 @@ Input:
 
 Route:
 
-- primary skill: `rule-audit`
+- primary workflow reference: `rule-audit`
 - evidence: `list-rules`, `coverage`, optionally `doctor`
 
 Why:
@@ -55,7 +55,7 @@ Input:
 
 Route:
 
-- primary skill: `documentation-maintenance`
+- primary workflow reference: `documentation-maintenance`
 - evidence: `freshness`, optionally `list-rules` or `route`
 
 Why:
@@ -71,7 +71,7 @@ Input:
 
 Route:
 
-- primary skill: `failure-repair`
+- return to `docpact` and use workflow reference: `failure-repair`
 - evidence: lint report JSON plus `diagnostic_id`
 
 Why:

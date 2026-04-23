@@ -1,10 +1,10 @@
 # Maintainer Routing Map
 
-Use this map to choose the primary governance-maintainer skill.
+Use this map to choose the primary governance-maintainer workflow reference.
 
-## Task-to-skill mapping
+## Task-to-workflow mapping
 
-| Maintainer task | Primary skill | Typical evidence | Notes |
+| Maintainer task | Primary workflow reference | Typical evidence | Notes |
 | --- | --- | --- | --- |
 | First-time repository adoption | `repository-onboarding` | `doctor`, `validate-config --strict`, `coverage`, `list-rules` | Use when config is missing, thin, or layout choice is still open. |
 | Add, replace, or disable rules | `rule-authoring` | `coverage`, `list-rules`, `validate-config --strict` | Use for concrete rule changes, not broad backlog planning. |
@@ -16,7 +16,7 @@ Use this map to choose the primary governance-maintainer skill.
 
 ## Shared remediation handoff
 
-Use `failure-repair` only when the maintainer task has already narrowed to:
+Return to `docpact` and use the failure-repair workflow only when the maintainer task has already narrowed to:
 
 - one explicit lint report
 - one `diagnostic_id`
@@ -31,7 +31,7 @@ Do not start with `failure-repair` for:
 
 ## CLI fallback
 
-If the task does not clearly fit an official maintainer skill, fall back to the smallest useful deterministic CLI surface:
+If the task does not clearly fit an internal maintainer workflow, fall back to the smallest useful deterministic CLI surface:
 
 - `doctor`
 - `list-rules`
@@ -39,4 +39,4 @@ If the task does not clearly fit an official maintainer skill, fall back to the 
 - `freshness`
 - `validate-config --strict`
 
-State that no official skill cleanly fits yet instead of inventing a workaround workflow.
+State that no internal workflow cleanly fits yet instead of inventing a workaround workflow.

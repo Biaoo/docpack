@@ -1,8 +1,3 @@
----
-name: repository-onboarding
-description: Plan and draft first-pass docpact adoption for an existing repository. Use when a repository is adding docpact for the first time, when `.docpact/config.yaml` is missing or incomplete, when you need to choose between repo and workspace layouts, or when you need a staged onboarding plan built around `doctor`, `list-rules`, `coverage`, `validate-config --strict`, and baseline-first adoption controls.
----
-
 # Repository Onboarding
 
 Build a first-pass `docpact` adoption plan without inventing new product semantics.
@@ -25,7 +20,7 @@ Use the doctor summary to classify the repository into one of these states:
 - config exists but rule graph is empty or incomplete
 - config exists and rules exist, but coverage or governance shape is still thin
 
-Read [references/onboarding-checklist.md](./references/onboarding-checklist.md) for the standard summary sections and output expectations.
+Read [../repository-onboarding/onboarding-checklist.md](../repository-onboarding/onboarding-checklist.md) for the standard summary sections and output expectations.
 
 ### 2. Decide the configuration shape
 
@@ -35,23 +30,27 @@ Choose the layout before drafting fixes.
 - If the repository clearly contains multiple governed child repositories with shared governance defaults, consider `layout: workspace`.
 - Do not recommend workspace inheritance unless the repository genuinely needs shared profiles and child overrides.
 
-Read [references/layout-selection.md](./references/layout-selection.md) when layout choice is not obvious.
+Read [../repository-onboarding/layout-selection.md](../repository-onboarding/layout-selection.md) when layout choice is not obvious.
 
 Start with the local starter templates in `assets/`:
 
-- [assets/repo-config-starter.yaml](./assets/repo-config-starter.yaml)
-- [assets/workspace-config-starter.yaml](./assets/workspace-config-starter.yaml)
-- [assets/workspace-child-config-starter.yaml](./assets/workspace-child-config-starter.yaml)
-
-If you need richer examples after that, compare them with the public product examples:
-
-- `docpact/examples/repo-config.yaml`
-- `docpact/examples/workspace-config.yaml`
-- `docpact/examples/workspace-child-config.yaml`
+- [../../assets/repository-onboarding/repo-config-starter.yaml](../../assets/repository-onboarding/repo-config-starter.yaml)
+- [../../assets/repository-onboarding/workspace-config-starter.yaml](../../assets/repository-onboarding/workspace-config-starter.yaml)
+- [../../assets/repository-onboarding/workspace-child-config-starter.yaml](../../assets/repository-onboarding/workspace-child-config-starter.yaml)
 
 Do not create new config fields or undocumented variants.
 
-### 3. Inspect the existing governance surface
+### 3. Classify the existing knowledge surface
+
+Before proposing config or document changes, classify the repository's existing knowledge surfaces with the product modeling boundary.
+
+- deterministic governance facts belong in config
+- explanatory material belongs in source docs
+- short summaries over authoritative facts belong in derived views
+
+Inspect existing docs, ownership tables, onboarding notes, and summary artifacts with that lens. Do not force explanatory material into config just because it feels important, and do not preserve hand-maintained summary files as a second truth source when a derived view is the better fit.
+
+### 4. Inspect the existing governance surface
 
 Use structured inspection before proposing a plan.
 
@@ -67,7 +66,7 @@ From these commands, separate findings into:
 - document/governance hygiene gaps
 - optional follow-on CI work
 
-### 4. Produce a staged onboarding plan
+### 5. Produce a staged onboarding plan
 
 Output a plan that clearly separates:
 
@@ -90,18 +89,20 @@ When historical lint debt is expected, recommend a baseline-first adoption seque
 4. create baseline if needed
 5. start blocking only new active findings
 
-Read [references/adoption-controls.md](./references/adoption-controls.md) before recommending baseline or waiver.
+Read [../repository-onboarding/adoption-controls.md](../repository-onboarding/adoption-controls.md) before recommending baseline or waiver.
 
 Use these templates when formatting output:
 
-- [assets/onboarding-summary-template.md](./assets/onboarding-summary-template.md)
-- [assets/adoption-plan-template.md](./assets/adoption-plan-template.md)
+- [../../assets/repository-onboarding/onboarding-summary-template.md](../../assets/repository-onboarding/onboarding-summary-template.md)
+- [../../assets/repository-onboarding/adoption-plan-template.md](../../assets/repository-onboarding/adoption-plan-template.md)
 
-### 5. Keep the boundaries explicit
+### 6. Keep the boundaries explicit
 
 Do not do any of the following:
 
 - Do not invent config fields.
+- Do not treat explanatory source docs as failed config.
+- Do not preserve a hand-maintained summary as a second truth source when a derived view should replace it.
 - Do not treat waiver as the default onboarding path.
 - Do not suppress findings yourself.
 - Do not say a repository is "ready" unless the recommendation can be checked by CLI commands.

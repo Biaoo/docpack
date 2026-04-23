@@ -56,4 +56,4 @@ If the question becomes:
 - how do we backfill governance gaps?
 - how do we maintain routing aliases?
 
-stop using this direct workflow skill as the primary guide and hand off to the relevant maintainer skill.
+stop using this direct workflow skill as the primary guide and hand off to `docpact-governance`, which will load the relevant internal maintainer workflow reference.

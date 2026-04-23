@@ -1,13 +1,8 @@
----
-name: rule-audit
-description: Audit `docpact` rule graph quality using existing structured CLI outputs. Use when a repository already has a non-trivial rule graph, when `coverage` shows dead rules or suspicious hotspots, when inherited rules and overrides are becoming hard to explain, or when maintainers need a refactor plan that distinguishes duplicate, dead, over-broad, over-narrow, or poorly-bound rules without directly editing config.
----
-
 # Rule Audit
 
 Inspect rule graph quality without rewriting the rule graph inside the audit itself.
 
-This skill is for diagnosis and refactor planning. It must stay grounded in `list-rules`, `coverage`, and `doctor`, and it must hand rule changes back to `rule-authoring` instead of directly modifying config.
+This workflow reference is for diagnosis and refactor planning. It must stay grounded in `list-rules`, `coverage`, and `doctor`, and it must hand concrete rule changes to the rule-authoring workflow reference instead of directly modifying config.
 
 ## Workflow
 
@@ -53,7 +48,7 @@ Primary audit classes:
 - `inheritance-provenance-candidate`
   - workspace profile rules and child overrides are hard to explain or appear unnecessarily divergent
 
-Read [references/rule-audit-rubric.md](./references/rule-audit-rubric.md) before classifying findings.
+Read [../rule-audit/rule-audit-rubric.md](../rule-audit/rule-audit-rubric.md) before classifying findings.
 
 ### 3. Distinguish "coverage exists" from "rule quality is healthy"
 
@@ -72,7 +67,7 @@ Coverage does **not** prove:
 - that the required docs are well chosen
 - that workspace inheritance is clean
 
-Use [references/rule-smell-patterns.md](./references/rule-smell-patterns.md) to avoid treating "covered" as "healthy."
+Use [../rule-audit/rule-smell-patterns.md](../rule-audit/rule-smell-patterns.md) to avoid treating "covered" as "healthy."
 
 ### 4. Inspect overlaps and scope quality
 
@@ -92,7 +87,7 @@ Audit questions:
 - Are config docs or root docs required too often without a strong reason?
 - Is a child override replacing inherited behavior when `add` would have been enough?
 
-If the repository uses workspace inheritance, read [references/workspace-audit-considerations.md](./references/workspace-audit-considerations.md).
+If the repository uses workspace inheritance, read [../rule-audit/workspace-audit-considerations.md](../rule-audit/workspace-audit-considerations.md).
 
 ### 5. Produce refactor recommendations, not config edits
 
@@ -108,21 +103,21 @@ Each audit finding should end in one explicit recommendation:
 - move logic into workspace profile
 - move logic into child override
 
-Do not edit config directly inside this skill.
+Do not edit config directly inside this workflow reference.
 
-When a recommendation becomes one concrete rule change, hand it off to:
+When a recommendation becomes one concrete rule change, switch to:
 
-- `rule-authoring` for trigger / requiredDocs / provenance refactors
-- `coverage-backfill` only when the real problem is still an uncovered backlog, not rule health
+- the rule-authoring workflow reference for trigger / requiredDocs / provenance refactors
+- the coverage-backfill workflow reference only when the real problem is still an uncovered backlog, not rule health
 
-Read [references/rule-authoring-handoff.md](./references/rule-authoring-handoff.md) before writing the handoff.
+Read [../rule-audit/rule-authoring-handoff.md](../rule-audit/rule-authoring-handoff.md) before writing the handoff.
 
 ### 6. End with an audit report and refactor queue
 
 Use:
 
-- [assets/audit-output-template.md](./assets/audit-output-template.md)
-- [assets/refactor-recommendation-template.md](./assets/refactor-recommendation-template.md)
+- [../../assets/rule-audit/audit-output-template.md](../../assets/rule-audit/audit-output-template.md)
+- [../../assets/rule-audit/refactor-recommendation-template.md](../../assets/rule-audit/refactor-recommendation-template.md)
 
 The final output should contain:
 
@@ -130,7 +125,7 @@ The final output should contain:
 - why each finding matters
 - which CLI signals support it
 - whether the next step is deletion, merge, split, trigger adjustment, required-doc adjustment, or inheritance cleanup
-- which findings should hand off to `rule-authoring`
+- which findings should switch to the rule-authoring workflow reference
 
 ## Output Requirements
 
@@ -141,8 +136,8 @@ Always include:
 - the supporting rule ids or coverage signals
 - whether the next step is:
   - `no-change`
-  - `rule-authoring`
-  - `coverage-backfill`
+  - `rule-authoring-workflow`
+  - `coverage-backfill-workflow`
   - `config cleanup`
 - why coverage being present does or does not imply healthy rule design
 

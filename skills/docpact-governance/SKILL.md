@@ -1,6 +1,6 @@
 ---
 name: docpact-governance
-description: Route governance-maintainer work to the right official docpact skill without redefining CLI semantics. Use when the task is about onboarding a repository, designing or auditing rules, backfilling coverage, maintaining routing aliases, integrating CI, or remediating stale governed docs as governance maintenance rather than as a normal coding-task workflow.
+description: Route governance-maintainer work to the right internal docpact workflow reference without redefining CLI semantics. Use when the task is about onboarding a repository, designing or auditing rules, backfilling coverage, maintaining routing aliases, integrating CI, or remediating stale governed docs as governance maintenance rather than as a normal coding-task workflow.
 ---
 
 # Docpact Governance
@@ -13,14 +13,24 @@ Keep this skill thin:
 
 - identify the maintainer task class
 - gather the minimum structured evidence
-- hand off to the right official skill
-- fall back to CLI when no official skill fits
+- load the right internal workflow reference
+- fall back to CLI when no internal workflow fits
 
-Do not duplicate child-skill procedures or invent new governance semantics here.
+Do not duplicate internal workflow procedures or invent new governance semantics here.
 
 ## Workflow
 
-### 1. Classify the maintainer task first
+### 1. Apply the modeling boundary first
+
+Before recommending config edits, source-doc maintenance, or derived-view treatment, apply the product modeling boundary:
+
+- deterministic governance facts belong in config
+- explanatory material belongs in source docs
+- short read-only summaries belong in derived views
+
+Do not copy authoritative executable truth from other repository files into `docpact` config unless the engine must consume it directly.
+
+### 2. Classify the maintainer task first
 
 Start by deciding which governance-maintainer problem you actually have.
 
@@ -48,11 +58,11 @@ Use these routing classes:
   - invalid review-reference cleanup
   - governance-aware document maintenance driven by `freshness`
 
-If the work is already narrowed to one explicit lint finding from a structured report, hand off to `failure-repair` instead of staying in broad maintainer routing.
+If the work is already narrowed to one explicit lint finding from a structured report, send it back to `docpact` and use the internal failure-repair workflow instead of staying in broad maintainer routing.
 
-Read [references/maintainer-routing-map.md](./references/maintainer-routing-map.md) before choosing a child skill.
+Read [references/maintainer-routing-map.md](./references/maintainer-routing-map.md) before choosing a workflow reference.
 
-### 2. Gather only the minimum structured evidence
+### 3. Gather only the minimum structured evidence
 
 Do not load every CLI surface by default. Pick the smallest commands that disambiguate the task.
 
@@ -96,38 +106,38 @@ Typical usage:
 
 If the problem cannot yet be classified from structured evidence, say that explicitly instead of guessing.
 
-### 3. Hand off to exactly one primary child skill
+### 4. Load exactly one primary workflow reference
 
-Once classified, move to one primary skill and stay there until the task changes materially.
+Once classified, move to one primary workflow reference and stay there until the task changes materially.
 
-Primary handoffs:
+Primary workflow references:
 
-- onboarding -> `repository-onboarding`
-- rule design or rule change -> `rule-authoring`
-- grouped coverage gap planning -> `coverage-backfill`
-- routing alias maintenance -> `routing-configuration`
-- rule graph quality review -> `rule-audit`
-- workflow and GitHub Actions design -> `ci-integration`
-- stale-doc remediation and invalid review-reference maintenance -> `documentation-maintenance`
+- onboarding -> [references/workflows/repository-onboarding.md](./references/workflows/repository-onboarding.md)
+- rule design or rule change -> [references/workflows/rule-authoring.md](./references/workflows/rule-authoring.md)
+- grouped coverage gap planning -> [references/workflows/coverage-backfill.md](./references/workflows/coverage-backfill.md)
+- routing alias maintenance -> [references/workflows/routing-configuration.md](./references/workflows/routing-configuration.md)
+- rule graph quality review -> [references/workflows/rule-audit.md](./references/workflows/rule-audit.md)
+- workflow and GitHub Actions design -> [references/workflows/ci-integration.md](./references/workflows/ci-integration.md)
+- stale-doc remediation and invalid review-reference maintenance -> [references/workflows/documentation-maintenance.md](./references/workflows/documentation-maintenance.md)
 
-Use `failure-repair` only as a shared support path when a maintainer task collapses into one explicit finding with a `diagnostic_id`.
+Use the internal failure-repair workflow in `docpact` only when a maintainer task collapses into one explicit finding with a `diagnostic_id`.
 
-Read [references/skill-boundary-guide.md](./references/skill-boundary-guide.md) before selecting a fallback or secondary handoff.
+Read [references/skill-boundary-guide.md](./references/skill-boundary-guide.md) before selecting a fallback or secondary workflow.
 
-### 4. Keep direct workflow and maintainer workflow separate
+### 5. Keep direct workflow and maintainer workflow separate
 
 Do not use this skill for:
 
 - "what should I read before coding?" -> use `docpact`
 - "what docs should this change have touched?" -> use `docpact`
-- "show me this one finding" -> use `docpact` or `failure-repair`
+- "show me this one finding" -> use `docpact`
 - "record completed review evidence" -> use `docpact`
 
 This skill exists only for maintaining the governance system.
 
-### 5. Fall back to CLI instead of inventing missing workflow
+### 6. Fall back to CLI instead of inventing missing workflow
 
-If no official maintainer skill fits, do not fabricate a pseudo-skill.
+If no internal maintainer workflow fits, do not fabricate a pseudo-workflow.
 
 Use the closest deterministic CLI path and state the gap clearly. Typical fallback commands are:
 
@@ -153,10 +163,10 @@ Use:
 Always include:
 
 - the maintainer task class you identified
-- the primary official skill to use next
-- why that skill is the best fit
+- the primary workflow reference to use next
+- why that workflow is the best fit
 - the minimum required structured inputs
-- whether `failure-repair` is needed for one narrowed finding
-- whether CLI fallback is required because no official skill fits
+- whether the task should return to `docpact` for one narrowed finding
+- whether CLI fallback is required because no internal workflow fits
 
-Do not rewrite the child skill's full procedure in your answer. Route cleanly, then stop.
+Do not rewrite the full workflow reference in your answer. Route cleanly, then stop.

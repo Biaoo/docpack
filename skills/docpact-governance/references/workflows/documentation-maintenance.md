@@ -1,13 +1,8 @@
----
-name: documentation-maintenance
-description: Turn `docpact freshness` results into concrete stale-doc maintenance actions without weakening governance semantics. Use when governed docs are reported as `warn` or `critical`, when invalid review references need repair, when review evidence and document structure are inconsistent, or when stale signals suggest follow-up rule, routing, or documentation maintenance work rather than a direct coding-task workflow.
----
-
 # Documentation Maintenance
 
 Turn repository-level freshness signals into the smallest correct maintenance action.
 
-This skill is for the `ongoing` phase after `docpact freshness` has exposed one or more governed docs as stale, suspicious, or missing valid review references. It is not a generic rewrite skill, and it is not a shortcut around rule/config maintenance.
+This workflow reference is for the `ongoing` phase after `docpact freshness` has exposed one or more governed docs as stale, suspicious, or missing valid review references. It is not a generic rewrite workflow, and it is not a shortcut around rule/config maintenance.
 
 ## Workflow
 
@@ -34,7 +29,7 @@ Treat these fields as the primary inputs:
 
 Do not start with prose-only interpretation when the JSON report is available.
 
-Read [references/stale-doc-triage-principles.md](./references/stale-doc-triage-principles.md) before classifying actions.
+Read [../documentation-maintenance/stale-doc-triage-principles.md](../documentation-maintenance/stale-doc-triage-principles.md) before classifying actions.
 
 ### 2. Classify each stale doc into the correct maintenance path
 
@@ -89,7 +84,7 @@ If the stale doc is also implicated by one explicit lint diagnostic, diagnostics
 docpact review mark --root <repo> --report <report.json> --id <diagnostic_id>
 ```
 
-Read [references/review-evidence-and-structure.md](./references/review-evidence-and-structure.md) before recommending `review mark`.
+Read [../documentation-maintenance/review-evidence-and-structure.md](../documentation-maintenance/review-evidence-and-structure.md) before recommending `review mark`.
 
 ### 4. Escalate when the stale signal is really a governance problem
 
@@ -106,7 +101,7 @@ Optionally inspect the related reading path:
 docpact route --root <repo> --paths <csv> --format json --detail full
 ```
 
-Escalate to the correct maintainer skill when appropriate:
+Escalate to the correct maintainer workflow reference when appropriate:
 
 - `rule-authoring`
   - the governed doc should change because the rule graph is wrong or incomplete
@@ -115,7 +110,7 @@ Escalate to the correct maintainer skill when appropriate:
 - `rule-audit`
   - the broader rule graph looks redundant, dead, or poorly bound
 
-Read [references/maintenance-escalation-guide.md](./references/maintenance-escalation-guide.md) before choosing escalation.
+Read [../documentation-maintenance/maintenance-escalation-guide.md](../documentation-maintenance/maintenance-escalation-guide.md) before choosing escalation.
 
 ### 5. End with a maintenance plan and explicit validation
 
@@ -154,9 +149,9 @@ If the stale maintenance overlaps with an active code diff, add the relevant `li
 
 Use:
 
-- [assets/maintenance-checklist.md](./assets/maintenance-checklist.md)
-- [assets/stale-remediation-template.md](./assets/stale-remediation-template.md)
-- [assets/maintenance-examples.md](./assets/maintenance-examples.md)
+- [../../assets/documentation-maintenance/maintenance-checklist.md](../../assets/documentation-maintenance/maintenance-checklist.md)
+- [../../assets/documentation-maintenance/stale-remediation-template.md](../../assets/documentation-maintenance/stale-remediation-template.md)
+- [../../assets/documentation-maintenance/maintenance-examples.md](../../assets/documentation-maintenance/maintenance-examples.md)
 
 ## Output Requirements
 

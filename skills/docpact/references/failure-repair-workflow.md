@@ -1,15 +1,10 @@
----
-name: failure-repair
-description: Diagnose and repair one docpact lint finding from a structured report. Use when `docpact lint` has already produced a JSON report, when you have a `diagnostic_id`, when you need to decide whether to update docs, refresh review evidence with `review mark`, adjust config or rules, or escalate to baseline or a narrowly-scoped waiver instead of treating a finding as a normal document repair.
----
-
 # Failure Repair
 
 Repair one `docpact` finding without redefining the engine's judgment.
 
-Use this skill only after you already have a structured lint report and a target `diagnostic_id`. Prefer `diagnostics show` and JSON report fields over terminal text. The goal is to select the correct repair path, not to debate whether the finding exists.
+Use this workflow reference only after you already have a structured lint report and a target `diagnostic_id`. Prefer `diagnostics show` and JSON report fields over terminal text. The goal is to select the correct repair path, not to debate whether the finding exists.
 
-This is a shared remediation skill:
+This is an internal remediation workflow:
 
 - use it from the top-level `docpact` direct workflow when one concrete after-coding finding needs repair
 - use it from governance-maintainer work only when broader maintenance has already narrowed to one explicit lint finding
@@ -46,7 +41,7 @@ Treat these fields as the primary input:
 
 If `finding_state` is not `active`, do not treat the problem as a normal repair candidate until you explain why it is already suppressed or waived.
 
-Read [references/finding-repair-matrix.md](./references/finding-repair-matrix.md) for the decision table.
+Read [finding-repair/finding-repair-matrix.md](./failure-repair/finding-repair-matrix.md) for the decision table.
 
 ### 2. Classify the repair path
 
@@ -100,7 +95,7 @@ docpact review mark --root <repo> --report <report.json> --id <diagnostic_id>
 
 That keeps navigation tied to the exact diagnostic instead of copying the path manually.
 
-Read [references/review-mark-guidance.md](./references/review-mark-guidance.md) before recommending `review mark`.
+Read [failure-repair/review-mark-guidance.md](./failure-repair/review-mark-guidance.md) before recommending `review mark`.
 
 ### 4. Keep adoption controls explicit
 
@@ -111,7 +106,7 @@ Do not treat baseline or waiver as normal repair actions.
 
 If a finding looks like historical debt rather than a fresh regression, say so explicitly and escalate to the adoption-control path instead of pretending the finding should be repaired inline.
 
-Read [references/adoption-controls.md](./references/adoption-controls.md) before recommending either path.
+Read [failure-repair/adoption-controls.md](./failure-repair/adoption-controls.md) before recommending either path.
 
 ### 5. End with executable next steps
 
@@ -161,4 +156,4 @@ Always include:
 - why other repair classes were rejected
 - the exact next commands to run
 
-Use the templates in `assets/` instead of inventing a new repair report shape each time.
+Use the templates in [../assets/failure-repair/](../assets/failure-repair) instead of inventing a new repair report shape each time.

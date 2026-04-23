@@ -1,17 +1,22 @@
----
-name: rule-authoring
-description: Draft or revise `docpact` governance rules without inventing new schema or enforcement semantics. Use when `coverage` or `uncovered-change` exposes a blind spot, when a new module needs first-pass governance, or when an existing rule is too broad, too narrow, or attached to the wrong required docs and must be reused, replaced, or extended within the current config model.
----
-
 # Rule Authoring
 
 Turn a governance need into the smallest correct rule change that the current engine can validate.
 
-This skill is for drafting or revising rules, not for bypassing the rule system. Prefer structured CLI outputs, preserve the current schema, and always end by handing control back to `validate-config --strict`.
+This workflow reference is for drafting or revising rules, not for bypassing the rule system. Prefer structured CLI outputs, preserve the current schema, and always end by handing control back to `validate-config --strict`.
 
 ## Workflow
 
-### 1. Define the authoring target
+### 1. Confirm this belongs in config
+
+Apply the product modeling boundary before treating the problem as rule authoring.
+
+- rule/config authoring only applies to deterministic governance facts that belong in config
+- explanatory guidance, rationale, troubleshooting, and exception handling belong in source docs
+- short summaries over existing facts belong in derived views, not in hand-maintained rule notes
+
+If the target information is mainly narrative or explanatory, stop and keep it in source docs instead of forcing a rule/config change.
+
+### 2. Define the authoring target
 
 Start from one explicit target:
 
@@ -39,7 +44,7 @@ Do not jump to rule authoring until you know whether you are editing:
 - a workspace root config
 - a child repo config that inherits a workspace profile
 
-### 2. Inspect the current rule graph and gap
+### 3. Inspect the current rule graph and gap
 
 Use structured inspection before proposing any new rule.
 
@@ -72,10 +77,10 @@ Use `route` only to inspect likely document reuse. It does not replace `coverage
 
 Read:
 
-- [references/rule-design-checklist.md](./references/rule-design-checklist.md)
-- [references/trigger-required-doc-principles.md](./references/trigger-required-doc-principles.md)
+- [../rule-authoring/rule-design-checklist.md](../rule-authoring/rule-design-checklist.md)
+- [../rule-authoring/trigger-required-doc-principles.md](../rule-authoring/trigger-required-doc-principles.md)
 
-### 3. Decide the correct authoring action
+### 4. Decide the correct authoring action
 
 Choose one of these outcomes before drafting YAML:
 
@@ -98,9 +103,9 @@ Use these rules when inheritance is involved:
 
 Do not add a new rule when reusing or replacing an existing rule would keep the graph smaller and clearer.
 
-Read [references/bad-rule-antipatterns.md](./references/bad-rule-antipatterns.md) before finalizing the action.
+Read [../rule-authoring/bad-rule-antipatterns.md](../rule-authoring/bad-rule-antipatterns.md) before finalizing the action.
 
-### 4. Draft only within current schema
+### 5. Draft only within current schema
 
 Every drafted rule must stay inside the published config model.
 
@@ -137,7 +142,7 @@ Current guardrails:
 - `requiredDocs` define review obligations after a trigger matched. They do not define coverage scope.
 - Reuse an existing required doc when the governance contract is the same. Add a new required doc only when a distinct document really needs to carry that contract.
 
-Start from [assets/rule-draft-template.yaml](./assets/rule-draft-template.yaml). Use the smallest section that matches the current config shape:
+Start from [../../assets/rule-authoring/rule-draft-template.yaml](../../assets/rule-authoring/rule-draft-template.yaml). Use the smallest section that matches the current config shape:
 
 - repo rule
 - workspace profile rule
@@ -146,7 +151,7 @@ Start from [assets/rule-draft-template.yaml](./assets/rule-draft-template.yaml).
 
 If the right answer is "no new rule needed," say that explicitly instead of forcing the template.
 
-### 5. Validate and explain the draft
+### 6. Validate and explain the draft
 
 Every rule draft must end with strict validation.
 
@@ -169,7 +174,7 @@ If the rule was designed to support a specific task path, optionally confirm the
 docpact route --root <repo> --paths <csv> --format json --detail full
 ```
 
-Use [assets/validation-steps-template.md](./assets/validation-steps-template.md) to format the validation handoff.
+Use [../../assets/rule-authoring/validation-steps-template.md](../../assets/rule-authoring/validation-steps-template.md) to format the validation handoff.
 
 ## Output Requirements
 

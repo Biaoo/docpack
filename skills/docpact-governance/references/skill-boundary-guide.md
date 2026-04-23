@@ -1,6 +1,6 @@
-# Skill Boundary Guide
+# Workflow Boundary Guide
 
-This skill only routes governance-maintainer work. It does not replace the direct workflow entrypoint and it does not absorb child-skill procedures.
+This guide applies to the governance-maintainer entrypoint. It does not replace the direct workflow entrypoint and it does not absorb detailed workflow procedures.
 
 ## Use `docpact` instead of `docpact-governance` when the task is:
 
@@ -20,27 +20,27 @@ This skill only routes governance-maintainer work. It does not replace the direc
 - designing CI usage of the official wrapper
 - performing stale-doc maintenance as repository governance work
 
-## Use `failure-repair` only when:
+## Return to `docpact` and use the failure-repair workflow only when:
 
 - you already have a structured lint report
 - the problem is narrowed to one `diagnostic_id`
 - the next step is to repair, escalate, or classify that one finding
 
-`failure-repair` is shared across direct workflow and maintainer workflow. It is not the default governance entrypoint.
+The failure-repair workflow is shared across direct workflow and maintainer workflow. It is not the default governance entrypoint.
 
-## Child-skill duplication rule
+## Workflow duplication rule
 
-When you route to a child skill:
+When you route to a workflow reference:
 
-- name the child skill
+- name the workflow reference
 - explain why it matches
 - list the minimum inputs to gather
 
-Do not restate the child skill's whole process unless the user explicitly asks for that detail.
+Do not restate the whole workflow reference unless the user explicitly asks for that detail.
 
 ## Product-gap rule
 
-If none of the official maintainer skills fit, say so. Fall back to CLI inspection and call out the gap explicitly. Do not invent:
+If none of the internal maintainer workflows fit, say so. Fall back to CLI inspection and call out the gap explicitly. Do not invent:
 
 - new config semantics
 - new skill-only workflow states

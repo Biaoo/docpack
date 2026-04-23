@@ -1,13 +1,8 @@
----
-name: routing-configuration
-description: Design or revise controlled `routing.intents` aliases for `docpact route` without expanding route into free-text intent handling. Use when a repository already uses `route`, when high-frequency tasks need stable `--intent` aliases, or when existing routing aliases are too broad, too narrow, duplicated, or misaligned with the current rule graph.
----
-
 # Routing Configuration
 
 Maintain controlled route intents as a thin, deterministic alias layer over the existing rule graph.
 
-This skill configures `routing.intents`; it does not change the meaning of `route`, invent natural-language routing, or add new route input semantics. Every change must return to `route` and `validate-config --strict`.
+This workflow configures `routing.intents`; it does not change the meaning of `route`, invent natural-language routing, or add new route input semantics. Every change must return to `route` and `validate-config --strict`.
 
 ## Workflow
 
@@ -66,7 +61,7 @@ Use `list-rules` and `route` together to answer:
 - whether the candidate alias maps to one coherent task family
 - whether the alias should reuse current routing behavior or should be split
 
-Read [references/controlled-intent-principles.md](./references/controlled-intent-principles.md) before deciding the alias shape.
+Read [../routing-configuration/controlled-intent-principles.md](../routing-configuration/controlled-intent-principles.md) before deciding the alias shape.
 
 ### 3. Choose the correct routing action
 
@@ -88,7 +83,7 @@ Do not add aliases just because a path family exists. Add them only when:
 - the alias stays deterministic
 - the underlying paths still align with the current rule graph
 
-Read [references/good-and-bad-intent-examples.md](./references/good-and-bad-intent-examples.md) before finalizing the action.
+Read [../routing-configuration/good-and-bad-intent-examples.md](../routing-configuration/good-and-bad-intent-examples.md) before finalizing the action.
 
 ### 4. Draft the smallest valid `routing.intents` change
 
@@ -111,7 +106,7 @@ Current inheritance behavior:
 - in `merge`, child aliases replace inherited aliases with the same name and add new aliases
 - in `replace`, inherited routing aliases are discarded and only child aliases remain
 
-Start from [assets/routing-intent-template.yaml](./assets/routing-intent-template.yaml). Use the smallest section that matches the current config model:
+Start from [../../assets/routing-configuration/routing-intent-template.yaml](../../assets/routing-configuration/routing-intent-template.yaml). Use the smallest section that matches the current config model:
 
 - repo-local routing block
 - workspace profile routing block
@@ -147,7 +142,7 @@ docpact route --root <repo> --paths <csv> --format json --detail full
 docpact route --root <repo> --intent <alias> --format json --detail full
 ```
 
-Use [assets/validation-steps-template.md](./assets/validation-steps-template.md) to format the handoff, and compare against [assets/route-before-after-example.md](./assets/route-before-after-example.md) when the output shape needs an example.
+Use [../../assets/routing-configuration/validation-steps-template.md](../../assets/routing-configuration/validation-steps-template.md) to format the handoff, and compare against [../../assets/routing-configuration/route-before-after-example.md](../../assets/routing-configuration/route-before-after-example.md) when the output shape needs an example.
 
 ## Output Requirements
 

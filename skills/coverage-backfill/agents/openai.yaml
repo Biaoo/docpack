@@ -1,4 +1,0 @@
-interface:
-  display_name: "Coverage Backfill"
-  short_description: "Turn coverage audit gaps into backfill tasks."
-  default_prompt: "Use $coverage-backfill to turn docpact coverage audit results into grouped governance backfill tasks."

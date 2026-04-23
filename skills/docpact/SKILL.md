@@ -11,7 +11,17 @@ Use `docpact` directly for the product's three main workflow phases:
 - after coding
 - ongoing trust checks
 
-This skill is the product-facing entrypoint. It is not the governance-maintainer router, and it is not a replacement for the CLI. Its job is to choose the correct existing `docpact` command first, then escalate to a maintainer skill only when the problem is no longer a normal task workflow.
+This skill is the product-facing entrypoint. It is not the governance-maintainer router, and it is not a replacement for the CLI. Its job is to choose the correct existing `docpact` command first, then load the correct internal direct-workflow reference or escalate to `docpact-governance` only when the problem is no longer a normal task workflow.
+
+## Modeling Boundary
+
+Apply the product modeling boundary before treating a question as governance authoring work.
+
+- deterministic governance facts belong in config
+- explanatory material belongs in source docs
+- `render` stays a read-only derived-view layer, not a new truth source
+
+If the problem becomes "where should this information live?", apply those three checks first, then move to `docpact-governance` instead of inventing a new direct-workflow path.
 
 ## Workflow Map
 
@@ -44,10 +54,10 @@ docpact render --root <repo> --view navigation-summary --module <prefix> --forma
 
 Use `render` here only as a read-only summary layer over the same route pipeline. It does not replace `route` when full recommendation JSON or explanation detail is required.
 
-If the repository does not have useful routing behavior yet, do not invent new route semantics here. Hand off to:
+If the repository does not have useful routing behavior yet, do not invent new route semantics here. Move to:
 
-- `routing-configuration` when the task is "define or fix controlled intent aliases"
-- `rule-authoring` when the route result is weak because the rule graph is weak
+- `docpact-governance` with the routing-configuration workflow when the task is "define or fix controlled intent aliases"
+- `docpact-governance` with the rule-authoring workflow when the route result is weak because the rule graph is weak
 
 ### 2. After coding: determine what should have changed
 
@@ -75,7 +85,7 @@ If `lint` returns findings and you need to inspect one exact result, move immedi
 docpact diagnostics show --report .docpact/runs/latest.json --id <diagnostic_id> --format json
 ```
 
-If the task becomes "repair this one finding," hand off to `failure-repair`. Treat it as a shared remediation skill, not as the governance-maintainer router.
+If the task becomes "repair this one finding," stay inside this skill and load [references/failure-repair-workflow.md](./references/failure-repair-workflow.md). Treat it as an internal remediation workflow, not as a separate entrypoint.
 
 ### 3. After coding: record completed review evidence
 
@@ -117,7 +127,7 @@ Use this when:
 - triaging stale governance debt
 - checking whether review references are invalid
 
-If the freshness result leads to stale-doc remediation, config work, or rule maintenance, that is no longer a direct workflow problem. Hand off to the appropriate maintainer workflow instead of forcing the direct workflow path.
+If the freshness result leads to stale-doc remediation, config work, or rule maintenance, that is no longer a direct workflow problem. Hand off to `docpact-governance` and select the appropriate maintainer workflow reference instead of forcing the direct workflow path.
 
 ### 5. Read-only summaries when you need compact context
 
@@ -153,18 +163,20 @@ Stay in this direct workflow skill when the question is:
 - how do I record completed review evidence?
 - are these governed docs stale?
 
-Hand off to maintainer-oriented skills when the question becomes:
+If the task turns into a modeling-boundary question, classify it as config, source docs, or derived views first. Then move to `docpact-governance` rather than forcing the answer through `route`, `lint`, or `render`.
 
-- which governance-maintainer workflow should we use for this repository problem? -> `docpact-governance`
-- how do we onboard this repository? -> `repository-onboarding`
-- how should we repair one explicit finding? -> `failure-repair` (shared remediation skill)
-- how should we design or change rules? -> `rule-authoring`
-- how should we turn uncovered hotspots into backlog? -> `coverage-backfill`
-- how should we maintain routing aliases? -> `routing-configuration`
-- how healthy is the current rule graph? -> `rule-audit`
-- how should we remediate stale docs or invalid review references? -> `documentation-maintenance`
+Move to `docpact-governance` when the question becomes:
 
-For broad governance-maintainer work, hand off to `docpact-governance`. Only route directly to a specific maintainer skill when the task is already clearly scoped.
+- which governance-maintainer workflow should we use for this repository problem?
+- how do we onboard this repository?
+- how should we design or change rules?
+- how should we turn uncovered hotspots into backlog?
+- how should we maintain routing aliases?
+- how healthy is the current rule graph?
+- how should we remediate stale docs or invalid review references?
+- how should we design or review CI integration?
+
+For broad governance-maintainer work, hand off to `docpact-governance`. Do not expose separate selection for the sub-workflows; let the governance entrypoint route internally.
 
 Read:
 
@@ -179,7 +191,7 @@ Always include:
 - the first CLI command to run
 - the minimum required inputs for that command
 - whether a saved report artifact is needed
-- whether the task should remain in direct workflow or hand off to a maintainer skill
+- whether the task should remain in direct workflow, use the internal failure-repair workflow, or hand off to `docpact-governance`
 
 When the first command is `render`, state which derived view is the smallest correct one.
 

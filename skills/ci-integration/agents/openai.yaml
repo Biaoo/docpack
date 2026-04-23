@@ -1,4 +1,0 @@
-interface:
-  display_name: "CI Integration"
-  short_description: "Design or review docpact GitHub Actions workflows."
-  default_prompt: "Use $ci-integration to generate, review, or repair GitHub Actions workflows for docpact using the official wrapper and existing CLI semantics."
