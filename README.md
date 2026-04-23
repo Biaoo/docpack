@@ -32,6 +32,7 @@ In agentic coding workflows, that usually breaks down in three places:
 Public design principles:
 
 - [docs/design-principles.md](./docs/design-principles.md)
+- [docs/modeling-boundary.md](./docs/modeling-boundary.md)
 
 ## Install
 
@@ -138,6 +139,24 @@ docpact route --root /path/to/repo --intent payments --format json
 docpact render --root /path/to/repo --view catalog-summary --format json
 docpact render --root /path/to/repo --view navigation-summary --paths src/payments/** --format text
 ```
+
+## What Belongs In Config, Source Docs, and Derived Views
+
+Use this rule of thumb before editing a `docpact`-governed repository:
+
+- put deterministic governance facts in `.docpact/config.yaml`
+- keep explanation, rationale, troubleshooting, and runbook material in source docs
+- treat `render` output as a read-only derived-view layer over existing authoritative facts
+
+Examples:
+
+- `rules`, `ownership`, and `routing.intents` belong in config
+- ADRs, exception handling guidance, and troubleshooting guides belong in source docs
+- ownership summaries and navigation summaries belong in derived views
+
+`render` is not a new source of truth. It is a compact entry surface over facts that already live in config or another authoritative file.
+
+For the full decision order, examples, and anti-patterns, see [docs/modeling-boundary.md](./docs/modeling-boundary.md).
 
 ## Adoption Controls
 

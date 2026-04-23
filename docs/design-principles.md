@@ -41,13 +41,25 @@ That means:
 
 Different views can look different, but they should all reflect the same underlying finding model.
 
-### 3. Default Short, Expand Explicitly
+### 3. Model Facts, Keep Explanations Separate
+
+Model deterministic governance facts in config, keep explanatory source docs separate, and treat derived views as non-authoritative.
+
+In practice:
+
+- config holds facts the deterministic engine must consume directly
+- source docs hold explanation, rationale, examples, exceptions, and runbooks
+- derived views stay read-only and summarize existing authoritative facts rather than becoming a second truth source
+
+This keeps `docpact` structured without forcing every useful explanation into schema fields.
+
+### 4. Default Short, Expand Explicitly
 
 The default result should contain only what is needed for the next decision.
 
 Longer context should be requested explicitly through detail levels, drill-down, or follow-up commands rather than dumped by default. This keeps CLI output readable and reduces unnecessary agent token usage.
 
-### 4. Token Cost Is Part of Product Design
+### 5. Token Cost Is Part of Product Design
 
 For agent consumers, output size is not a cosmetic concern. It affects whether the tool is practical to use at all.
 
@@ -58,7 +70,7 @@ For agent consumers, output size is not a cosmetic concern. It affects whether t
 - single-finding drill-down
 - reusable artifacts such as JSON reports
 
-### 5. Explicit Artifacts Over Hidden State
+### 6. Explicit Artifacts Over Hidden State
 
 `docpact` avoids hidden session state, background caches, or opaque in-memory coupling between commands.
 
@@ -70,7 +82,7 @@ When a workflow needs continuity, it should use explicit artifacts such as:
 
 That keeps automation, CI, and agent workflows replayable.
 
-### 6. Navigation Matters As Much As Detection
+### 7. Navigation Matters As Much As Detection
 
 Finding a problem is only part of the job. The tool should also help answer:
 
@@ -89,6 +101,8 @@ These principles show up in the current product shape:
 - `lint` enforces review/update requirements after coding
 - `freshness` audits whether governed documents may be stale
 - `baseline` and `waiver` stay explicit and file-backed
+- config carries deterministic governance facts while source docs remain explanatory
+- `render` exposes derived views without becoming a new authoring source
 - `list-rules`, `doctor`, `coverage`, and skills build on top of the same deterministic core
 
 ## Scope
