@@ -1,10 +1,12 @@
+use std::collections::BTreeMap;
+
 use miette::Result;
 use serde::Serialize;
 
 use crate::AppExit;
 use crate::cli::{ValidateConfigArgs, ValidateConfigOutputFormat};
 use crate::config::{
-    ConfigValidationProblem, load_catalog_configs, load_coverage_configs,
+    ConfigValidationProblem, LoadedCatalogConfig, load_catalog_configs, load_coverage_configs,
     load_doc_inventory_configs, load_freshness_configs, load_impact_files, load_ownership_configs,
     load_routing_configs, root_dir_from_option, validate_config_graph,
     validate_loaded_catalog_configs, validate_loaded_coverage_configs,
@@ -46,8 +48,21 @@ pub struct ValidateConfigProblem {
     pub code: String,
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_id: Option<String>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProblemScope {
+    base_dir: String,
+    scope_kind: String,
+    repo_id: Option<String>,
 }
 
 pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
@@ -78,7 +93,13 @@ pub fn execute(args: &ValidateConfigArgs) -> Result<ValidateConfigReport> {
             message: "default mode only checks that effective config loads; use --strict for graph and ownership checks"
                 .into(),
         });
-        return Ok(build_report(args.strict, rules.len(), warnings, Vec::new()));
+        return Ok(build_report(
+            args.strict,
+            rules.len(),
+            warnings,
+            Vec::new(),
+            &problem_scopes(&catalog_configs),
+        ));
     }
 
     let mut problems = validate_config_graph(&root_dir, args.config.as_deref())?;
@@ -110,7 +131,13 @@ pub fn execute(args: &ValidateConfigArgs) -> Result<ValidateConfigReport> {
             &right.message,
         ))
     });
-    Ok(build_report(args.strict, rules.len(), warnings, problems))
+    Ok(build_report(
+        args.strict,
+        rules.len(),
+        warnings,
+        problems,
+        &problem_scopes(&catalog_configs),
+    ))
 }
 
 fn build_report(
@@ -118,10 +145,11 @@ fn build_report(
     rule_count: usize,
     warnings: Vec<ValidateConfigWarning>,
     problems: Vec<ConfigValidationProblem>,
+    scopes: &BTreeMap<String, ProblemScope>,
 ) -> ValidateConfigReport {
     let problems = problems
         .into_iter()
-        .map(problem_summary)
+        .map(|problem| problem_summary(problem, scopes))
         .collect::<Vec<_>>();
     ValidateConfigReport {
         schema_version: VALIDATE_CONFIG_SCHEMA_VERSION.into(),
@@ -139,10 +167,40 @@ fn build_report(
     }
 }
 
-fn problem_summary(problem: ConfigValidationProblem) -> ValidateConfigProblem {
+fn problem_scopes(catalog_configs: &[LoadedCatalogConfig]) -> BTreeMap<String, ProblemScope> {
+    catalog_configs
+        .iter()
+        .map(|config| {
+            (
+                config.source.clone(),
+                ProblemScope {
+                    base_dir: if config.base_dir.is_empty() {
+                        ".".into()
+                    } else {
+                        config.base_dir.clone()
+                    },
+                    scope_kind: config.scope_kind.as_str().into(),
+                    repo_id: config.repo_id.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn problem_summary(
+    problem: ConfigValidationProblem,
+    scopes: &BTreeMap<String, ProblemScope>,
+) -> ValidateConfigProblem {
+    let scope = scopes
+        .get(problem.source.split('#').next().unwrap_or(&problem.source))
+        .cloned();
+
     ValidateConfigProblem {
         code: "invalid-config".into(),
         source: problem.source,
+        base_dir: scope.as_ref().map(|scope| scope.base_dir.clone()),
+        scope_kind: scope.as_ref().map(|scope| scope.scope_kind.clone()),
+        repo_id: scope.and_then(|scope| scope.repo_id),
         rule_id: problem.rule_id,
         message: problem.message,
     }
@@ -430,7 +488,92 @@ rules:
         assert_eq!(report.command, "validate-config");
         assert_eq!(report.summary.status, "fail");
         assert_eq!(report.problems[0].code, "invalid-config");
+        assert_eq!(report.problems[0].base_dir.as_deref(), Some("."));
+        assert_eq!(report.problems[0].scope_kind.as_deref(), Some("repo-local"));
         assert!(rendered.contains("Docpact validate-config: failed"));
         assert!(rendered.contains("Next: fix the config entries above"));
+    }
+
+    #[test]
+    fn strict_validate_config_allows_nested_repo_local_scopes() {
+        let root = temp_dir("docpact-validate-workspace-scopes");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root should exist");
+        fs::create_dir_all(root.join(format!("repo-a/{DOC_ROOT_DIR}"))).expect("repo a config dir");
+        fs::create_dir_all(root.join(format!("repo-b/{DOC_ROOT_DIR}"))).expect("repo b config dir");
+        fs::create_dir_all(root.join("repo-a/src")).expect("repo a src");
+        fs::create_dir_all(root.join("repo-b/src")).expect("repo b src");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+catalog:
+  repos:
+    - id: repo-a
+      path: repo-a
+    - id: repo-b
+      path: repo-b
+routing:
+  intents:
+    workspace-integration:
+      paths:
+        - repo-a/src/**
+rules: []
+"#,
+        )
+        .expect("root config should be written");
+
+        for repo in ["repo-a", "repo-b"] {
+            fs::write(
+                root.join(format!("{repo}/{CONFIG_FILE}")),
+                format!(
+                    r#"
+version: 1
+layout: repo
+catalog:
+  repos:
+    - id: {repo}
+      path: .
+ownership:
+  domains:
+    - id: repo-governance-and-docs
+      paths:
+        include:
+          - src/**
+      ownerRepo: {repo}
+routing:
+  intents:
+    repo-docs:
+      paths:
+        - src/**
+    proof:
+      paths:
+        - docs/proof/**
+rules: []
+"#
+                ),
+            )
+            .expect("child config should be written");
+            fs::write(
+                root.join(format!("{repo}/src/index.ts")),
+                "export const x = 1;\n",
+            )
+            .expect("tracked source should be written");
+        }
+
+        git(&root, &["add", "."]);
+
+        let report = execute(&ValidateConfigArgs {
+            root: Some(root),
+            config: None,
+            strict: true,
+            format: ValidateConfigOutputFormat::Json,
+        })
+        .expect("validation should execute");
+
+        assert_eq!(report.summary.status, "ok");
+        assert_eq!(report.summary.problem_count, 0);
     }
 }

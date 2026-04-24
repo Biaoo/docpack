@@ -649,8 +649,11 @@ mod tests {
         CODE_MISSING_COVERAGE_SCOPE, CODE_MISSING_DOC_INVENTORY, CODE_MISSING_FRESHNESS_CONFIG,
         CODE_MISSING_GOVERNED_DOCS, CODE_OWNERSHIP_OVERLAP, DOCTOR_SCHEMA_VERSION, execute,
     };
-    use crate::cli::{DoctorArgs, DoctorOutputFormat};
+    use crate::cli::{
+        DoctorArgs, DoctorOutputFormat, ValidateConfigArgs, ValidateConfigOutputFormat,
+    };
     use crate::config::CONFIG_FILE;
+    use crate::validate_config;
 
     fn temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -728,6 +731,112 @@ rules: []
         assert_eq!(report.summary.config_present, true);
         assert_eq!(report.summary.rule_count, 0);
         assert_eq!(report.findings[0].code, CODE_EMPTY_RULE_GRAPH);
+    }
+
+    #[test]
+    fn doctor_and_strict_validate_agree_on_nested_repo_local_scopes() {
+        let root = temp_dir("docpact-doctor-workspace-scopes");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc root should exist");
+        fs::create_dir_all(root.join("repo-a/.docpact")).expect("repo a config dir");
+        fs::create_dir_all(root.join("repo-b/.docpact")).expect("repo b config dir");
+        fs::create_dir_all(root.join("repo-a/src")).expect("repo a src");
+        fs::create_dir_all(root.join("repo-b/src")).expect("repo b src");
+        fs::create_dir_all(root.join("docs")).expect("docs dir");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: workspace
+coverage:
+  include:
+    - repo-a/**
+    - repo-b/**
+docInventory:
+  include:
+    - docs/**
+freshness:
+  warn_after_commits: 20
+  warn_after_days: 30
+  critical_after_days: 60
+catalog:
+  repos:
+    - id: repo-a
+      path: repo-a
+    - id: repo-b
+      path: repo-b
+routing:
+  intents:
+    workspace-integration:
+      paths:
+        - repo-a/src/**
+rules:
+  - id: workspace-docs
+    scope: workspace
+    repo: workspace
+    triggers:
+      - path: repo-a/src/**
+        kind: code
+    requiredDocs:
+      - path: docs/workspace.md
+        mode: review_or_update
+    reason: Workspace changes require workspace docs.
+"#,
+        )
+        .expect("root config should be written");
+
+        for repo in ["repo-a", "repo-b"] {
+            fs::write(
+                root.join(format!("{repo}/.docpact/config.yaml")),
+                format!(
+                    r#"
+version: 1
+layout: repo
+catalog:
+  repos:
+    - id: {repo}
+      path: .
+ownership:
+  domains:
+    - id: repo-governance-and-docs
+      paths:
+        include:
+          - src/**
+      ownerRepo: {repo}
+routing:
+  intents:
+    repo-docs:
+      paths:
+        - src/**
+rules: []
+"#
+                ),
+            )
+            .expect("child config should be written");
+            fs::write(
+                root.join(format!("{repo}/src/index.ts")),
+                "export const x = 1;\n",
+            )
+            .expect("tracked source should be written");
+        }
+        fs::write(root.join("docs/workspace.md"), "# Workspace\n").expect("doc should be written");
+        git(&root, &["add", "."]);
+
+        let doctor_report = execute(&base_args(&root)).expect("doctor should execute");
+        let validate_report = validate_config::execute(&ValidateConfigArgs {
+            root: Some(root),
+            config: None,
+            strict: true,
+            format: ValidateConfigOutputFormat::Json,
+        })
+        .expect("validate-config should execute");
+
+        assert!(doctor_report.findings.is_empty());
+        assert_eq!(doctor_report.summary.effective_config_count, 3);
+        assert_eq!(doctor_report.summary.ownership_conflict_count, 0);
+        assert_eq!(validate_report.summary.status, "ok");
+        assert_eq!(validate_report.summary.problem_count, 0);
     }
 
     #[test]

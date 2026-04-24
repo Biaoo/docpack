@@ -189,7 +189,11 @@ pub struct RoutingSummary {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct RoutingIntentSummary {
     pub alias: String,
+    pub config_source: String,
     pub source: String,
+    pub scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<String>,
     pub base_dir: String,
     pub resolution: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -564,7 +568,10 @@ fn execute_routing_summary(args: &RenderArgs) -> Result<RenderReport> {
 
                 RoutingIntentSummary {
                     alias: alias.clone(),
+                    config_source: config.source.clone(),
                     source: config.source.clone(),
+                    scope: config.scope_kind.as_str().into(),
+                    repo_id: config.repo_id.clone(),
                     base_dir: if config.base_dir.is_empty() {
                         ".".into()
                     } else {
@@ -905,9 +912,11 @@ fn render_routing_summary_text(report: &RoutingSummaryReport, limit: Option<usiz
         limit,
         report.intents.iter().map(|intent| {
             format!(
-                "- alias={} source={} base_dir={} resolution={} profile={} mode={} paths={} matched_tracked_paths={} duplicate={}\n",
+                "- alias={} source={} scope={} repo_id={} base_dir={} resolution={} profile={} mode={} paths={} matched_tracked_paths={} duplicate={}\n",
                 intent.alias,
                 intent.source,
+                intent.scope,
+                intent.repo_id.as_deref().unwrap_or("-"),
                 intent.base_dir,
                 intent.resolution,
                 intent.workspace_profile.as_deref().unwrap_or("-"),
@@ -1245,6 +1254,10 @@ rules:
             r#"
 version: 1
 layout: repo
+catalog:
+  repos:
+    - id: demo
+      path: .
 routing:
   intents:
     api:
@@ -1276,7 +1289,11 @@ rules: []
         assert_eq!(report.summary.tracked_path_count, 3);
         assert!(report.summary.analysis_available);
         assert_eq!(report.intents[0].alias, "api");
+        assert_eq!(report.intents[0].config_source, ".docpact/config.yaml");
         assert_eq!(report.intents[0].source, ".docpact/config.yaml");
+        assert_eq!(report.intents[0].scope, "repo-local");
+        assert_eq!(report.intents[0].repo_id.as_deref(), Some("demo"));
+        assert_eq!(report.intents[0].base_dir, ".");
         assert_eq!(report.intents[0].resolution, "local");
         assert_eq!(
             report.intents[0].resolved_patterns,
@@ -1288,6 +1305,8 @@ rules: []
         let rendered = render_text_report(&RenderReport::RoutingSummary(report), None);
         assert!(rendered.contains("Docpact render routing-summary:"));
         assert!(rendered.contains("alias=api"));
+        assert!(rendered.contains("scope=repo-local"));
+        assert!(rendered.contains("repo_id=demo"));
         assert!(rendered.contains("Next: use `docpact route --intent <alias>`"));
     }
 

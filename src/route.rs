@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::AppExit;
 use crate::cli::{RouteArgs, RouteDetail, RouteOutputFormat};
 use crate::config::{
-    CatalogRepo, LoadedCatalogConfig, LoadedRoutingConfig, OwnershipPathAnalysis,
+    CatalogRepo, ConfigScopeKind, LoadedCatalogConfig, LoadedRoutingConfig, OwnershipPathAnalysis,
     analyze_ownership_paths, load_catalog_configs, load_impact_files, load_ownership_configs,
     load_routing_configs, normalize_path, resolve_rule_path, root_dir_from_option,
 };
@@ -180,6 +180,15 @@ struct AdvisoryDocBuilder {
 struct CatalogPathContext {
     repo_id: String,
     canonical_repo: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IntentEntry {
+    source: String,
+    base_dir: String,
+    scope_kind: ConfigScopeKind,
+    repo_id: Option<String>,
+    patterns: Vec<String>,
 }
 
 pub fn run(args: RouteArgs) -> Result<AppExit> {
@@ -623,9 +632,10 @@ fn prepare_inputs(
         });
     }
 
-    let intent_index = build_intent_index(routing_configs)?;
+    let scope_hints = infer_scope_hints(&resolved_inputs, routing_configs);
+    let intent_index = build_intent_table(routing_configs);
     for intent in &intents {
-        let Some(patterns) = intent_index.get(intent) else {
+        let Some(entries) = intent_index.get(intent) else {
             let available = intent_index.keys().cloned().collect::<Vec<_>>();
             if available.is_empty() {
                 bail!(
@@ -637,6 +647,7 @@ fn prepare_inputs(
                 available.join(", ")
             );
         };
+        let patterns = resolve_intent_patterns(intent, entries, &scope_hints)?;
 
         let candidates = tracked_paths
             .iter()
@@ -700,10 +711,10 @@ fn parse_named_inputs(values: &[String], flag_name: &str) -> Result<Vec<String>>
     Ok(parsed)
 }
 
-fn build_intent_index(
+fn build_intent_table(
     routing_configs: &[LoadedRoutingConfig],
-) -> Result<BTreeMap<String, Vec<String>>> {
-    let mut index = BTreeMap::<String, (String, Vec<String>)>::new();
+) -> BTreeMap<String, Vec<IntentEntry>> {
+    let mut index = BTreeMap::<String, Vec<IntentEntry>>::new();
 
     for loaded in routing_configs {
         for (alias, intent) in &loaded.routing.intents {
@@ -713,21 +724,89 @@ fn build_intent_index(
                 .map(|pattern| resolve_rule_path(&loaded.base_dir, pattern))
                 .collect::<Vec<_>>();
 
-            if let Some((existing_source, _)) = index.get(alias) {
-                bail!(
-                    "routing intent alias `{alias}` is ambiguous across `{existing_source}` and `{}`",
-                    loaded.source
-                );
-            }
-
-            index.insert(alias.clone(), (loaded.source.clone(), resolved_patterns));
+            index.entry(alias.clone()).or_default().push(IntentEntry {
+                source: loaded.source.clone(),
+                base_dir: loaded.base_dir.clone(),
+                scope_kind: loaded.scope_kind,
+                repo_id: loaded.repo_id.clone(),
+                patterns: resolved_patterns,
+            });
         }
     }
 
-    Ok(index
-        .into_iter()
-        .map(|(alias, (_, patterns))| (alias, patterns))
-        .collect())
+    index
+}
+
+fn resolve_intent_patterns(
+    alias: &str,
+    entries: &[IntentEntry],
+    scope_hints: &BTreeSet<String>,
+) -> Result<Vec<String>> {
+    if entries.len() == 1 {
+        return Ok(entries[0].patterns.clone());
+    }
+
+    let root_entries = entries
+        .iter()
+        .filter(|entry| entry.scope_kind == ConfigScopeKind::WorkspaceRoot)
+        .collect::<Vec<_>>();
+    if root_entries.len() == 1 {
+        return Ok(root_entries[0].patterns.clone());
+    }
+
+    if !scope_hints.is_empty() {
+        let scoped_matches = entries
+            .iter()
+            .filter(|entry| !entry.base_dir.is_empty() && scope_hints.contains(&entry.base_dir))
+            .collect::<Vec<_>>();
+        if scoped_matches.len() == 1 {
+            return Ok(scoped_matches[0].patterns.clone());
+        }
+    }
+
+    let scopes = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} scope={} repo_id={} base_dir={}",
+                entry.source,
+                entry.scope_kind.as_str(),
+                entry.repo_id.as_deref().unwrap_or("-"),
+                if entry.base_dir.is_empty() {
+                    "."
+                } else {
+                    entry.base_dir.as_str()
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    bail!(
+        "routing intent alias `{alias}` exists in multiple repo scopes. Matched scopes: {scopes}. Try adding --paths <repo-path/...> or --module <repo-path> to disambiguate, or inspect aliases with `docpact render --view routing-summary --format text`."
+    );
+}
+
+fn infer_scope_hints(
+    resolved_inputs: &[ResolvedInput],
+    routing_configs: &[LoadedRoutingConfig],
+) -> BTreeSet<String> {
+    let mut hints = BTreeSet::new();
+
+    for input in resolved_inputs {
+        for candidate in &input.candidates {
+            for config in routing_configs {
+                if config.base_dir.is_empty() {
+                    continue;
+                }
+                if matches_module_scope(candidate, &config.base_dir) {
+                    hints.insert(config.base_dir.clone());
+                }
+            }
+        }
+    }
+
+    hints
 }
 
 fn matches_module_scope(tracked_path: &str, module: &str) -> bool {
@@ -1793,6 +1872,123 @@ rules:
             report.governed_docs[0].match_reason.matched_input_paths,
             vec!["intent:auth"]
         );
+    }
+
+    #[test]
+    fn route_root_intent_ignores_unrelated_child_duplicate_aliases() {
+        let root = temp_dir("docpact-route-workspace-root-intent");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("repo-a/.docpact")).expect("repo a config dir");
+        fs::create_dir_all(root.join("repo-b/.docpact")).expect("repo b config dir");
+        fs::create_dir_all(root.join("repo-a/src")).expect("repo a src");
+        fs::create_dir_all(root.join("repo-b/src")).expect("repo b src");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: workspace
+routing:
+  intents:
+    workspace-integration:
+      paths:
+        - repo-a/src/**
+rules: []
+"#,
+        )
+        .expect("root config");
+        for repo in ["repo-a", "repo-b"] {
+            fs::write(
+                root.join(format!("{repo}/.docpact/config.yaml")),
+                r#"
+version: 1
+layout: repo
+routing:
+  intents:
+    proof:
+      paths:
+        - docs/proof/**
+rules: []
+"#,
+            )
+            .expect("child config");
+        }
+        fs::write(root.join("repo-a/src/index.ts"), "export const a = 1;\n").expect("repo a file");
+        fs::write(root.join("repo-b/src/index.ts"), "export const b = 1;\n").expect("repo b file");
+        git(&root, &["add", "."]);
+
+        let mut args = base_args(root.clone(), "");
+        args.paths = None;
+        args.intent = vec!["workspace-integration".into()];
+        let report = execute_with_today(&args, "2026-04-22").expect("route should not fail");
+
+        assert_eq!(report.summary.intent_input_count, 1);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.code == "no-rule-matches")
+        );
+    }
+
+    #[test]
+    fn route_child_duplicate_intent_requires_scope_unless_path_disambiguates() {
+        let root = temp_dir("docpact-route-workspace-child-intent");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("repo-a/.docpact")).expect("repo a config dir");
+        fs::create_dir_all(root.join("repo-b/.docpact")).expect("repo b config dir");
+        fs::create_dir_all(root.join("repo-a/src")).expect("repo a src");
+        fs::create_dir_all(root.join("repo-b/src")).expect("repo b src");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            "version: 1\nlayout: workspace\nrules: []\n",
+        )
+        .expect("root config");
+        for repo in ["repo-a", "repo-b"] {
+            fs::write(
+                root.join(format!("{repo}/.docpact/config.yaml")),
+                r#"
+version: 1
+layout: repo
+routing:
+  intents:
+    repo-docs:
+      paths:
+        - src/**
+rules: []
+"#,
+            )
+            .expect("child config");
+            fs::write(
+                root.join(format!("{repo}/src/index.ts")),
+                "export const x = 1;\n",
+            )
+            .expect("tracked file");
+        }
+        git(&root, &["add", "."]);
+
+        let mut ambiguous_args = base_args(root.clone(), "");
+        ambiguous_args.paths = None;
+        ambiguous_args.intent = vec!["repo-docs".into()];
+        let error = execute_with_today(&ambiguous_args, "2026-04-22")
+            .expect_err("duplicate child alias should be ambiguous without scope");
+        assert!(
+            error
+                .to_string()
+                .contains("routing intent alias `repo-docs` exists in multiple repo scopes")
+        );
+        assert!(error.to_string().contains("repo-a/.docpact/config.yaml"));
+        assert!(error.to_string().contains("repo-b/.docpact/config.yaml"));
+
+        let mut scoped_args = base_args(root.clone(), "repo-a/src/index.ts");
+        scoped_args.intent = vec!["repo-docs".into()];
+        let report =
+            execute_with_today(&scoped_args, "2026-04-22").expect("path should disambiguate");
+        assert_eq!(report.summary.input_path_count, 1);
+        assert_eq!(report.summary.intent_input_count, 1);
     }
 
     #[test]

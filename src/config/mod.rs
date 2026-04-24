@@ -22,6 +22,23 @@ pub enum ImpactLayout {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigScopeKind {
+    WorkspaceRoot,
+    RepoLocal,
+    WorkspaceChildInherited,
+}
+
+impl ConfigScopeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkspaceRoot => "workspace-root",
+            Self::RepoLocal => "repo-local",
+            Self::WorkspaceChildInherited => "workspace-child-inherited",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ConfigLayout {
@@ -379,6 +396,8 @@ pub struct LoadedDocInventoryConfig {
 pub struct LoadedRoutingConfig {
     pub source: String,
     pub base_dir: String,
+    pub scope_kind: ConfigScopeKind,
+    pub repo_id: Option<String>,
     pub routing: RoutingConfig,
     pub resolution: BlockResolution,
 }
@@ -387,6 +406,8 @@ pub struct LoadedRoutingConfig {
 pub struct LoadedCatalogConfig {
     pub source: String,
     pub base_dir: String,
+    pub scope_kind: ConfigScopeKind,
+    pub repo_id: Option<String>,
     pub catalog: CatalogConfig,
 }
 
@@ -394,6 +415,8 @@ pub struct LoadedCatalogConfig {
 pub struct LoadedOwnershipConfig {
     pub source: String,
     pub base_dir: String,
+    pub scope_kind: ConfigScopeKind,
+    pub repo_id: Option<String>,
     pub ownership: OwnershipConfig,
 }
 
@@ -522,6 +545,73 @@ fn layout_from_config(layout: ConfigLayout) -> ImpactLayout {
     match layout {
         ConfigLayout::Workspace => ImpactLayout::Workspace,
         ConfigLayout::Repo => ImpactLayout::Repo,
+    }
+}
+
+fn scope_kind_for_parsed(parsed: &ParsedImpactFile) -> ConfigScopeKind {
+    if parsed.descriptor.base_dir.is_empty() && parsed.parsed.layout == ConfigLayout::Workspace {
+        ConfigScopeKind::WorkspaceRoot
+    } else if parsed.parsed.inherit.is_some() {
+        ConfigScopeKind::WorkspaceChildInherited
+    } else {
+        ConfigScopeKind::RepoLocal
+    }
+}
+
+fn infer_repo_id(
+    parsed: &ParsedImpactFile,
+    workspace_root: Option<&ParsedImpactFile>,
+) -> Option<String> {
+    if let Some(repo_id) = parsed
+        .parsed
+        .catalog
+        .as_ref()
+        .and_then(|catalog| infer_local_catalog_repo_id(&parsed.descriptor.base_dir, catalog))
+    {
+        return Some(repo_id);
+    }
+
+    let root = workspace_root?;
+    if parsed.descriptor.base_dir.is_empty() {
+        return None;
+    }
+
+    root.parsed.catalog.as_ref().and_then(|catalog| {
+        catalog
+            .repos
+            .iter()
+            .find(|repo| {
+                !repo.id.trim().is_empty()
+                    && normalized_catalog_repo_root(&root.descriptor.base_dir, &repo.path)
+                        == parsed.descriptor.base_dir
+            })
+            .map(|repo| repo.id.trim().to_string())
+    })
+}
+
+fn infer_local_catalog_repo_id(base_dir: &str, catalog: &CatalogConfig) -> Option<String> {
+    catalog
+        .repos
+        .iter()
+        .find(|repo| {
+            !repo.id.trim().is_empty()
+                && normalized_catalog_repo_root(base_dir, &repo.path) == normalize_path(base_dir)
+        })
+        .map(|repo| repo.id.trim().to_string())
+        .or_else(|| {
+            if catalog.repos.len() == 1 && !catalog.repos[0].id.trim().is_empty() {
+                Some(catalog.repos[0].id.trim().to_string())
+            } else {
+                None
+            }
+        })
+}
+
+fn normalized_catalog_repo_root(base_dir: &str, repo_path: &str) -> String {
+    if repo_path == "." {
+        normalize_path(base_dir)
+    } else {
+        resolve_rule_path(base_dir, repo_path)
     }
 }
 
@@ -713,11 +803,19 @@ pub fn load_catalog_configs(
     root_dir: &Path,
     config_override: Option<&Path>,
 ) -> Result<Vec<LoadedCatalogConfig>> {
-    Ok(load_parsed_impact_files(root_dir, config_override)?
+    let parsed_files = load_parsed_impact_files(root_dir, config_override)?;
+    let workspace_root = parsed_files
+        .first()
+        .filter(|parsed| parsed.parsed.layout == ConfigLayout::Workspace)
+        .cloned();
+
+    Ok(parsed_files
         .into_iter()
         .map(|parsed| LoadedCatalogConfig {
-            source: parsed.descriptor.rel_path,
-            base_dir: parsed.descriptor.base_dir,
+            source: parsed.descriptor.rel_path.clone(),
+            base_dir: parsed.descriptor.base_dir.clone(),
+            scope_kind: scope_kind_for_parsed(&parsed),
+            repo_id: infer_repo_id(&parsed, workspace_root.as_ref()),
             catalog: normalize_catalog_config(&parsed.parsed.catalog.unwrap_or_default()),
         })
         .collect())
@@ -727,11 +825,19 @@ pub fn load_ownership_configs(
     root_dir: &Path,
     config_override: Option<&Path>,
 ) -> Result<Vec<LoadedOwnershipConfig>> {
-    Ok(load_parsed_impact_files(root_dir, config_override)?
+    let parsed_files = load_parsed_impact_files(root_dir, config_override)?;
+    let workspace_root = parsed_files
+        .first()
+        .filter(|parsed| parsed.parsed.layout == ConfigLayout::Workspace)
+        .cloned();
+
+    Ok(parsed_files
         .into_iter()
         .map(|parsed| LoadedOwnershipConfig {
-            source: parsed.descriptor.rel_path,
-            base_dir: parsed.descriptor.base_dir,
+            source: parsed.descriptor.rel_path.clone(),
+            base_dir: parsed.descriptor.base_dir.clone(),
+            scope_kind: scope_kind_for_parsed(&parsed),
+            repo_id: infer_repo_id(&parsed, workspace_root.as_ref()),
             ownership: normalize_ownership_config(&parsed.parsed.ownership.unwrap_or_default()),
         })
         .collect())
@@ -768,6 +874,9 @@ fn resolve_repo_local_effective_config(parsed: &ParsedImpactFile) -> Result<Effe
             parsed.descriptor.rel_path
         );
     }
+
+    let scope_kind = scope_kind_for_parsed(parsed);
+    let repo_id = infer_repo_id(parsed, None);
 
     Ok(EffectiveConfig {
         source: parsed.descriptor.rel_path.clone(),
@@ -824,6 +933,8 @@ fn resolve_repo_local_effective_config(parsed: &ParsedImpactFile) -> Result<Effe
         routing: LoadedRoutingConfig {
             source: parsed.descriptor.rel_path.clone(),
             base_dir: parsed.descriptor.base_dir.clone(),
+            scope_kind,
+            repo_id,
             routing: parsed.parsed.routing.clone().unwrap_or_default(),
             resolution: BlockResolution {
                 origin_kind: if parsed.parsed.routing.is_some() {
@@ -866,6 +977,9 @@ fn resolve_workspace_root_effective_config(root: &ParsedImpactFile) -> Result<Ef
             root.descriptor.rel_path
         );
     }
+
+    let scope_kind = scope_kind_for_parsed(root);
+    let repo_id = infer_repo_id(root, None);
 
     Ok(EffectiveConfig {
         source: root.descriptor.rel_path.clone(),
@@ -918,6 +1032,8 @@ fn resolve_workspace_root_effective_config(root: &ParsedImpactFile) -> Result<Ef
         routing: LoadedRoutingConfig {
             source: root.descriptor.rel_path.clone(),
             base_dir: root.descriptor.base_dir.clone(),
+            scope_kind,
+            repo_id,
             routing: root.parsed.routing.clone().unwrap_or_default(),
             resolution: BlockResolution {
                 origin_kind: if root.parsed.routing.is_some() {
@@ -1026,6 +1142,8 @@ fn resolve_workspace_child_effective_config(
         overrides.freshness.as_ref(),
         &inherit.workspace_profile,
     )?;
+    let scope_kind = scope_kind_for_parsed(child);
+    let repo_id = infer_repo_id(child, Some(root));
 
     Ok(EffectiveConfig {
         source: child.descriptor.rel_path.clone(),
@@ -1046,6 +1164,8 @@ fn resolve_workspace_child_effective_config(
         routing: LoadedRoutingConfig {
             source: child.descriptor.rel_path.clone(),
             base_dir: child.descriptor.base_dir.clone(),
+            scope_kind,
+            repo_id,
             routing,
             resolution: routing_resolution,
         },
@@ -1693,12 +1813,9 @@ pub fn validate_loaded_routing_configs(
     loaded_configs: &[LoadedRoutingConfig],
 ) -> Vec<ConfigValidationProblem> {
     let mut problems = Vec::new();
-    let mut aliases = BTreeMap::<String, Vec<&LoadedRoutingConfig>>::new();
 
     for loaded in loaded_configs {
         for (alias, intent) in &loaded.routing.intents {
-            aliases.entry(alias.clone()).or_default().push(loaded);
-
             if intent.paths.is_empty() {
                 problems.push(ConfigValidationProblem {
                     source: loaded.source.clone(),
@@ -1719,34 +1836,6 @@ pub fn validate_loaded_routing_configs(
         }
     }
 
-    for (alias, entries) in aliases {
-        if entries.len() < 2 {
-            continue;
-        }
-
-        let all_sources = entries
-            .iter()
-            .map(|entry| entry.source.as_str())
-            .collect::<Vec<_>>();
-
-        for entry in entries {
-            let other_sources = all_sources
-                .iter()
-                .copied()
-                .filter(|source| *source != entry.source)
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            problems.push(ConfigValidationProblem {
-                source: entry.source.clone(),
-                rule_id: None,
-                message: format!(
-                    "routing intent alias `{alias}` is duplicated across configs: {other_sources}"
-                ),
-            });
-        }
-    }
-
     problems.sort_by(|left, right| {
         (&left.source, &left.rule_id, &left.message).cmp(&(
             &right.source,
@@ -1762,97 +1851,67 @@ pub fn validate_loaded_catalog_configs(
     loaded_configs: &[LoadedCatalogConfig],
 ) -> Vec<ConfigValidationProblem> {
     let mut problems = Vec::new();
-    let mut id_sources = BTreeMap::<String, Vec<&LoadedCatalogConfig>>::new();
-    let mut path_sources = BTreeMap::<String, Vec<&LoadedCatalogConfig>>::new();
-    let mut repo_entries = Vec::<(&LoadedCatalogConfig, &CatalogRepo)>::new();
+    let mut id_sources = BTreeMap::<(String, String), Vec<&LoadedCatalogConfig>>::new();
+    let mut path_sources = BTreeMap::<(String, String), Vec<&LoadedCatalogConfig>>::new();
+    let mut repo_entries = Vec::<(&LoadedCatalogConfig, &CatalogRepo, String)>::new();
 
     for loaded in loaded_configs {
         for repo in &loaded.catalog.repos {
             if !repo.id.is_empty() {
-                id_sources.entry(repo.id.clone()).or_default().push(loaded);
-            }
-            if !repo.path.is_empty() {
-                path_sources
-                    .entry(repo.path.clone())
+                id_sources
+                    .entry((loaded.source.clone(), repo.id.clone()))
                     .or_default()
                     .push(loaded);
             }
-            repo_entries.push((loaded, repo));
+            if !repo.path.is_empty() {
+                let repo_root = normalized_catalog_repo_root(&loaded.base_dir, &repo.path);
+                path_sources
+                    .entry((loaded.source.clone(), repo_root.clone()))
+                    .or_default()
+                    .push(loaded);
+                repo_entries.push((loaded, repo, repo_root));
+            } else {
+                repo_entries.push((loaded, repo, String::new()));
+            }
         }
     }
 
-    for (repo_id, entries) in id_sources {
+    for ((_, repo_id), entries) in id_sources {
         if entries.len() < 2 {
             continue;
         }
 
-        let all_sources = entries
-            .iter()
-            .map(|entry| entry.source.as_str())
-            .collect::<Vec<_>>();
-
         for entry in entries {
-            let other_sources = all_sources
-                .iter()
-                .copied()
-                .filter(|source| *source != entry.source)
-                .collect::<Vec<_>>()
-                .join(", ");
-            let other_sources = if other_sources.is_empty() {
-                entry.source.clone()
-            } else {
-                other_sources
-            };
             problems.push(ConfigValidationProblem {
                 source: entry.source.clone(),
                 rule_id: None,
-                message: format!(
-                    "catalog repo id `{repo_id}` is duplicated across configs: {other_sources}"
-                ),
+                message: format!("catalog repo id `{repo_id}` is duplicated in config"),
             });
         }
     }
 
-    for (repo_path, entries) in path_sources {
+    for ((_, repo_path), entries) in path_sources {
         if entries.len() < 2 {
             continue;
         }
 
-        let all_sources = entries
-            .iter()
-            .map(|entry| entry.source.as_str())
-            .collect::<Vec<_>>();
-
         for entry in entries {
-            let other_sources = all_sources
-                .iter()
-                .copied()
-                .filter(|source| *source != entry.source)
-                .collect::<Vec<_>>()
-                .join(", ");
-            let other_sources = if other_sources.is_empty() {
-                entry.source.clone()
-            } else {
-                other_sources
-            };
             problems.push(ConfigValidationProblem {
                 source: entry.source.clone(),
                 rule_id: None,
-                message: format!(
-                    "catalog repo path `{repo_path}` is duplicated across configs: {other_sources}"
-                ),
+                message: format!("catalog repo path `{repo_path}` is duplicated in config"),
             });
         }
     }
 
     for left_index in 0..repo_entries.len() {
         for right_index in (left_index + 1)..repo_entries.len() {
-            let (left_loaded, left_repo) = repo_entries[left_index];
-            let (right_loaded, right_repo) = repo_entries[right_index];
-            if left_repo.path == right_repo.path {
+            let (left_loaded, left_repo, ref left_root) = repo_entries[left_index];
+            let (right_loaded, right_repo, ref right_root) = repo_entries[right_index];
+            if left_root == right_root {
                 continue;
             }
-            if !catalog_repo_paths_overlap(&left_repo.path, &right_repo.path) {
+            if !catalog_repo_paths_overlap(left_root, right_root) {
                 continue;
             }
 
@@ -1891,13 +1950,20 @@ pub fn validate_loaded_ownership_configs(
     catalog_configs: &[LoadedCatalogConfig],
 ) -> Vec<ConfigValidationProblem> {
     let mut problems = Vec::new();
-    let mut domain_sources = BTreeMap::<String, Vec<&LoadedOwnershipConfig>>::new();
-    let mut catalog_repo_ids = BTreeSet::<String>::new();
+    let mut domain_sources = BTreeMap::<(String, String), Vec<&LoadedOwnershipConfig>>::new();
+    let mut catalog_repo_ids_by_source = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut workspace_catalog_repo_ids = BTreeSet::<String>::new();
 
     for loaded_catalog in catalog_configs {
         for repo in &loaded_catalog.catalog.repos {
             if !repo.id.is_empty() {
-                catalog_repo_ids.insert(repo.id.clone());
+                catalog_repo_ids_by_source
+                    .entry(loaded_catalog.source.clone())
+                    .or_default()
+                    .insert(repo.id.clone());
+                if loaded_catalog.scope_kind == ConfigScopeKind::WorkspaceRoot {
+                    workspace_catalog_repo_ids.insert(repo.id.clone());
+                }
             }
         }
     }
@@ -1906,12 +1972,19 @@ pub fn validate_loaded_ownership_configs(
         for domain in &loaded.ownership.domains {
             if !domain.id.is_empty() {
                 domain_sources
-                    .entry(domain.id.clone())
+                    .entry((loaded.source.clone(), domain.id.clone()))
                     .or_default()
                     .push(loaded);
             }
 
-            if !domain.owner_repo.is_empty() && !catalog_repo_ids.contains(&domain.owner_repo) {
+            if !domain.owner_repo.is_empty()
+                && !catalog_repo_reference_exists(
+                    loaded,
+                    &domain.owner_repo,
+                    &catalog_repo_ids_by_source,
+                    &workspace_catalog_repo_ids,
+                )
+            {
                 problems.push(ConfigValidationProblem {
                     source: loaded.source.clone(),
                     rule_id: None,
@@ -1923,7 +1996,12 @@ pub fn validate_loaded_ownership_configs(
             }
 
             for repo_id in &domain.non_owner_repos {
-                if !catalog_repo_ids.contains(repo_id) {
+                if !catalog_repo_reference_exists(
+                    loaded,
+                    repo_id,
+                    &catalog_repo_ids_by_source,
+                    &workspace_catalog_repo_ids,
+                ) {
                     problems.push(ConfigValidationProblem {
                         source: loaded.source.clone(),
                         rule_id: None,
@@ -1937,35 +2015,16 @@ pub fn validate_loaded_ownership_configs(
         }
     }
 
-    for (domain_id, entries) in domain_sources {
+    for ((_, domain_id), entries) in domain_sources {
         if entries.len() < 2 {
             continue;
         }
 
-        let all_sources = entries
-            .iter()
-            .map(|entry| entry.source.as_str())
-            .collect::<Vec<_>>();
-
         for entry in entries {
-            let other_sources = all_sources
-                .iter()
-                .copied()
-                .filter(|source| *source != entry.source)
-                .collect::<Vec<_>>()
-                .join(", ");
-            let other_sources = if other_sources.is_empty() {
-                entry.source.clone()
-            } else {
-                other_sources
-            };
-
             problems.push(ConfigValidationProblem {
                 source: entry.source.clone(),
                 rule_id: None,
-                message: format!(
-                    "ownership domain id `{domain_id}` is duplicated across configs: {other_sources}"
-                ),
+                message: format!("ownership domain id `{domain_id}` is duplicated in config"),
             });
         }
     }
@@ -1979,6 +2038,18 @@ pub fn validate_loaded_ownership_configs(
     });
 
     problems
+}
+
+fn catalog_repo_reference_exists(
+    loaded: &LoadedOwnershipConfig,
+    repo_id: &str,
+    catalog_repo_ids_by_source: &BTreeMap<String, BTreeSet<String>>,
+    workspace_catalog_repo_ids: &BTreeSet<String>,
+) -> bool {
+    catalog_repo_ids_by_source
+        .get(&loaded.source)
+        .is_some_and(|repo_ids| repo_ids.contains(repo_id))
+        || workspace_catalog_repo_ids.contains(repo_id)
 }
 
 pub fn analyze_ownership_paths(
@@ -3344,7 +3415,7 @@ overrides:
     }
 
     #[test]
-    fn strict_validation_reports_duplicate_routing_intent_aliases() {
+    fn strict_validation_allows_scoped_duplicate_routing_intent_aliases() {
         let root = temp_dir("docpact-routing-duplicate-intents");
         fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root dir");
         fs::create_dir_all(root.join(format!("a/{DOC_ROOT_DIR}"))).expect("repo a dir");
@@ -3390,14 +3461,8 @@ rules: []
 
         let routing_configs = load_routing_configs(&root, None).expect("routing configs");
         let problems = validate_loaded_routing_configs(&routing_configs);
-        let messages = problems
-            .iter()
-            .map(|problem| problem.message.as_str())
-            .collect::<Vec<_>>();
 
-        assert!(messages.iter().any(|message| {
-            message.contains("routing intent alias `payments` is duplicated across configs")
-        }));
+        assert!(problems.is_empty());
     }
 
     #[test]
@@ -3497,9 +3562,6 @@ rules: []
             .map(|problem| problem.message.as_str())
             .collect::<Vec<_>>();
 
-        assert!(messages.iter().any(|message| {
-            message.contains("catalog repo id `app` is duplicated across configs")
-        }));
         assert!(messages.iter().any(|message| {
             message.contains("catalog repo path `apps` overlaps with `apps/web`")
         }));
@@ -3632,9 +3694,6 @@ rules: []
         }));
         assert!(messages.iter().any(|message| {
             message.contains("ownership domain `checkout` references unknown ownerRepo `missing`")
-        }));
-        assert!(messages.iter().any(|message| {
-            message.contains("ownership domain id `payments` is duplicated across configs")
         }));
     }
 

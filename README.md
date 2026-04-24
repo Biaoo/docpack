@@ -210,7 +210,7 @@ Typical usage:
 ```yaml
 - uses: <org>/docpact@v1
   with:
-    version: 0.1.3
+    version: 0.1.4
     args: >
       lint
       --root .
