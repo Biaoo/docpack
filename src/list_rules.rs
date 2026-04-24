@@ -4,6 +4,7 @@ use serde::Serialize;
 use crate::AppExit;
 use crate::cli::{ListRulesArgs, ListRulesOutputFormat};
 use crate::config::{load_impact_files, resolve_rule_path, root_dir_from_option};
+use crate::reporters::OutputWarning;
 use crate::rules::RequiredDocMode;
 
 pub const LIST_RULES_SCHEMA_VERSION: &str = "docpact.list-rules.v1";
@@ -13,6 +14,8 @@ pub struct ListRulesReport {
     pub schema_version: String,
     pub tool_name: String,
     pub tool_version: String,
+    pub command: String,
+    pub warnings: Vec<OutputWarning>,
     pub rule_count: usize,
     pub rules: Vec<ListedRule>,
 }
@@ -106,6 +109,8 @@ pub fn execute(args: &ListRulesArgs) -> Result<ListRulesReport> {
         schema_version: LIST_RULES_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "list-rules".into(),
+        warnings: Vec::new(),
         rule_count: rules.len(),
         rules,
     })
@@ -122,43 +127,47 @@ fn emit_report(report: &ListRulesReport, format: ListRulesOutputFormat) {
 }
 
 fn emit_text_report(report: &ListRulesReport) {
-    println!("Docpact loaded rules:");
-    println!("Summary: total_rules={}", report.rule_count);
+    println!(
+        "Docpact list-rules: {} effective rule(s).",
+        report.rule_count
+    );
 
     if report.rules.is_empty() {
         println!("Rules:");
         println!("- none");
+        println!(
+            "Next: add rules to `.docpact/config.yaml`, or run `docpact doctor --root .` for onboarding diagnostics."
+        );
         return;
     }
 
     println!("Rules:");
     for rule in &report.rules {
         println!(
-            "- rule_id={} source={} config_source={} origin={} scope={} repo={} triggers={} required_docs={}",
+            "- {}: {} trigger(s) -> {} required doc(s) (source: {}, origin: {}, scope: {}, repo: {})",
             rule.id,
+            rule.trigger_count,
+            rule.required_doc_count,
             rule.rule_source,
-            rule.config_source,
             rule.provenance_kind,
             rule.scope,
             rule.repo,
-            rule.trigger_count,
-            rule.required_doc_count,
         );
-        println!("  description={}", rule.description);
+        println!("  description: {}", rule.description);
         if let Some(workspace_profile) = &rule.workspace_profile {
-            println!("  workspace_profile={workspace_profile}");
+            println!("  workspace profile: {workspace_profile}");
         }
         if rule.triggers.is_empty() {
-            println!("  triggers=none");
+            println!("  triggers: none");
         } else {
             for trigger in &rule.triggers {
                 match &trigger.kind {
                     Some(kind) => println!(
-                        "  trigger path={} original_path={} kind={}",
+                        "  trigger: {} (from {}; kind: {})",
                         trigger.path, trigger.original_path, kind
                     ),
                     None => println!(
-                        "  trigger path={} original_path={}",
+                        "  trigger: {} (from {})",
                         trigger.path, trigger.original_path
                     ),
                 }
@@ -166,16 +175,19 @@ fn emit_text_report(report: &ListRulesReport) {
         }
 
         if rule.required_docs.is_empty() {
-            println!("  required_docs=none");
+            println!("  required docs: none");
         } else {
             for required_doc in &rule.required_docs {
                 println!(
-                    "  required_doc path={} original_path={} mode={}",
+                    "  expects: {} (from {}; mode: {})",
                     required_doc.path, required_doc.original_path, required_doc.mode
                 );
             }
         }
     }
+    println!(
+        "Next: use `docpact explain <path> --root .` to inspect one path against these rules."
+    );
 }
 
 #[cfg(test)]
@@ -231,6 +243,8 @@ rules:
         let report = execute(&base_args(&root)).expect("list-rules should execute");
 
         assert_eq!(report.schema_version, LIST_RULES_SCHEMA_VERSION);
+        assert_eq!(report.command, "list-rules");
+        assert!(report.warnings.is_empty());
         assert_eq!(report.rule_count, 1);
         let rule = &report.rules[0];
         assert_eq!(rule.id, "api-docs");

@@ -15,6 +15,7 @@ use crate::config::{
 };
 use crate::git::{get_tracked_paths, get_unique_commits_since, is_commit_reachable_from_head};
 use crate::metadata::parse_frontmatter_scalar_values;
+use crate::reporters::OutputWarning;
 use crate::rules::MatchedRule;
 use crate::rules::matches_pattern;
 
@@ -25,6 +26,8 @@ pub struct FreshnessReport {
     pub schema_version: String,
     pub tool_name: String,
     pub tool_version: String,
+    pub command: String,
+    pub warnings: Vec<OutputWarning>,
     pub generated_at: String,
     pub summary: FreshnessSummary,
     pub items: Vec<FreshnessItem>,
@@ -129,6 +132,8 @@ fn execute_with_today(args: &FreshnessArgs, today: &str) -> Result<FreshnessRepo
         schema_version: FRESHNESS_AUDIT_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "freshness".into(),
+        warnings: Vec::new(),
         generated_at: today.to_string(),
         summary,
         items,
@@ -649,7 +654,14 @@ fn emit_report(report: &FreshnessReport, format: FreshnessOutputFormat) {
 }
 
 fn emit_text_report(report: &FreshnessReport) {
-    println!("Docpact repository freshness audit:");
+    let status = if report.summary.critical_count > 0 {
+        "critical stale docs found"
+    } else if report.summary.warn_count > 0 || report.summary.invalid_review_reference_count > 0 {
+        "stale docs need attention"
+    } else {
+        "pass"
+    };
+    println!("Docpact freshness: {status}.");
     println!(
         "Summary: governed_docs={}, fresh_docs={}, stale_docs={}, warn={}, critical={}, invalid_review_references={}",
         report.summary.governed_doc_count,
@@ -662,6 +674,11 @@ fn emit_text_report(report: &FreshnessReport) {
     emit_items("Critical docs", report, FreshnessLevel::Critical);
     emit_items("Warn docs", report, FreshnessLevel::Warn);
     emit_invalid_review_references(report);
+    if status == "pass" {
+        println!("Next: no freshness action required.");
+    } else {
+        println!("Next: review stale docs and refresh lastReviewedAt / lastReviewedCommit.");
+    }
 }
 
 fn emit_items(label: &str, report: &FreshnessReport, level: FreshnessLevel) {
@@ -679,7 +696,7 @@ fn emit_items(label: &str, report: &FreshnessReport, level: FreshnessLevel) {
 
     for item in items.into_iter().take(10) {
         println!(
-            "- path={} commits_since_review={} days_since_review={} associated_paths={}",
+            "- review {} (commits_since_review={}, days_since_review={}, associated_paths={})",
             item.path,
             item.commits_since_review
                 .map(|value| value.to_string())
@@ -707,7 +724,7 @@ fn emit_invalid_review_references(report: &FreshnessReport) {
 
     for item in items.into_iter().take(10) {
         println!(
-            "- path={} problems={}",
+            "- fix review metadata for {} ({})",
             item.path,
             item.review_reference_problems.join(",")
         );
@@ -724,7 +741,10 @@ mod tests {
     use crate::AppExit;
     use crate::cli::FreshnessOutputFormat;
 
-    use super::{FreshnessArgs, FreshnessLevel, execute_with_today, parse_iso_date, run};
+    use super::{
+        FRESHNESS_AUDIT_SCHEMA_VERSION, FreshnessArgs, FreshnessLevel, execute_with_today,
+        parse_iso_date, run,
+    };
 
     fn temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -858,6 +878,9 @@ rules:
         let report =
             execute_with_today(&base_args(root), "2026-04-21").expect("freshness should execute");
 
+        assert_eq!(report.schema_version, FRESHNESS_AUDIT_SCHEMA_VERSION);
+        assert_eq!(report.command, "freshness");
+        assert!(report.warnings.is_empty());
         assert_eq!(report.summary.governed_doc_count, 3);
         assert_eq!(report.summary.warn_count, 1);
         assert_eq!(report.summary.critical_count, 1);

@@ -12,6 +12,7 @@ use crate::config::{
     resolve_rule_path, root_dir_from_option,
 };
 use crate::git::get_tracked_paths;
+use crate::reporters::OutputWarning;
 use crate::rules::matches_pattern;
 
 pub const COVERAGE_AUDIT_SCHEMA_VERSION: &str = "docpact.coverage.v1";
@@ -21,6 +22,8 @@ pub struct CoverageReport {
     pub schema_version: String,
     pub tool_name: String,
     pub tool_version: String,
+    pub command: String,
+    pub warnings: Vec<OutputWarning>,
     pub rule_coverage: RuleCoverageReport,
     pub doc_reachability: DocReachabilityReport,
 }
@@ -137,6 +140,8 @@ pub fn execute(args: &CoverageArgs) -> Result<CoverageReport> {
         schema_version: COVERAGE_AUDIT_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "coverage".into(),
+        warnings: Vec::new(),
         rule_coverage: RuleCoverageReport {
             governed_path_count: governed_paths.len(),
             covered_path_count: covered_paths.len(),
@@ -172,7 +177,15 @@ fn emit_report(report: &CoverageReport, format: CoverageOutputFormat) {
 }
 
 fn emit_text_report(report: &CoverageReport) {
-    println!("Docpact repository coverage audit:");
+    let status = if report.rule_coverage.uncovered_path_count > 0
+        || report.rule_coverage.dead_rule_count > 0
+        || report.doc_reachability.orphan_doc_count > 0
+    {
+        "attention required"
+    } else {
+        "pass"
+    };
+    println!("Docpact coverage: {status}.");
     println!(
         "Rule coverage: governed_paths={}, covered_paths={}, uncovered_paths={}, dead_rules={}, coverage_ratio={:.3}",
         report.rule_coverage.governed_path_count,
@@ -194,6 +207,13 @@ fn emit_text_report(report: &CoverageReport) {
         report.doc_reachability.reachable_ratio,
     );
     emit_top_paths("Orphan docs", &report.doc_reachability.orphan_docs);
+    if status == "pass" {
+        println!("Next: no coverage action required.");
+    } else {
+        println!(
+            "Next: add missing rule triggers, remove dead rules, or exclude intentional orphan docs."
+        );
+    }
 }
 
 fn emit_top_path_counts(label: &str, items: &[PathCount]) {
@@ -204,7 +224,10 @@ fn emit_top_path_counts(label: &str, items: &[PathCount]) {
     }
 
     for item in items.iter().take(10) {
-        println!("- pattern={} count={}", item.pattern, item.count);
+        println!(
+            "- {} matched {} uncovered path(s)",
+            item.pattern, item.count
+        );
     }
 
     if items.len() > 10 {
@@ -221,7 +244,7 @@ fn emit_top_dead_rules(dead_rules: &[DeadRuleRecord]) {
 
     for rule in dead_rules.iter().take(10) {
         println!(
-            "- rule_id={} source={} triggers={}",
+            "- remove or update rule {} from {} (triggers: {})",
             rule.rule_id,
             rule.source,
             rule.trigger_patterns.join(",")
@@ -412,7 +435,7 @@ mod tests {
     use crate::AppExit;
     use crate::cli::{CoverageArgs, CoverageOutputFormat};
 
-    use super::{execute, run};
+    use super::{COVERAGE_AUDIT_SCHEMA_VERSION, execute, run};
 
     fn temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -513,6 +536,9 @@ rules:
 
         let report = execute(&base_args(root)).expect("coverage should execute");
 
+        assert_eq!(report.schema_version, COVERAGE_AUDIT_SCHEMA_VERSION);
+        assert_eq!(report.command, "coverage");
+        assert!(report.warnings.is_empty());
         assert_eq!(report.rule_coverage.governed_path_count, 2);
         assert_eq!(report.rule_coverage.covered_path_count, 1);
         assert_eq!(

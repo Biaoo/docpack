@@ -12,6 +12,7 @@ use crate::config::{normalize_path, root_dir_from_option};
 use crate::diagnostics::read_diagnostics_artifact;
 use crate::git::get_head_commit;
 use crate::metadata::{apply_review_metadata_to_markdown, apply_review_metadata_to_yaml};
+use crate::reporters::OutputWarning;
 
 pub fn run(args: ReviewArgs) -> Result<AppExit> {
     match args.command {
@@ -38,6 +39,11 @@ fn mark(args: ReviewMarkArgs) -> Result<AppExit> {
 
     emit_result(
         ReviewMarkResult {
+            schema_version: "docpact.review-mark.v1".into(),
+            tool_name: env!("CARGO_PKG_NAME").into(),
+            tool_version: env!("CARGO_PKG_VERSION").into(),
+            command: "review mark".into(),
+            warnings: Vec::new(),
             status: "ok".into(),
             mode: if args.report.is_some() {
                 "diagnostic".into()
@@ -62,6 +68,11 @@ struct ReviewTarget {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct ReviewMarkResult {
+    schema_version: String,
+    tool_name: String,
+    tool_version: String,
+    command: String,
+    warnings: Vec<OutputWarning>,
     status: String,
     mode: String,
     reviewed_at: String,

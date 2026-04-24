@@ -31,41 +31,65 @@ pub enum Commands {
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Examples:
+  docpact lint --root . --files src/api/client.ts --format json
+  docpact lint --root . --staged --mode enforce
+  docpact lint --root . --merge-base main --output .docpact/runs/latest.json
+
+Choose exactly one diff source: --files, --staged, --worktree, --merge-base, or --base with --head.")]
 pub struct LintArgs {
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Explicit config file. Defaults to .docpact/config.yaml under --root.
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Base commit for explicit base/head diff mode.
     #[arg(long)]
     pub base: Option<String>,
+    /// Head commit for explicit base/head diff mode.
     #[arg(long)]
     pub head: Option<String>,
+    /// Comma-separated changed paths to inspect.
     #[arg(long)]
     pub files: Option<String>,
+    /// Inspect staged git changes.
     #[arg(long, default_value_t = false)]
     pub staged: bool,
+    /// Inspect unstaged worktree changes.
     #[arg(long, default_value_t = false)]
     pub worktree: bool,
+    /// Diff from merge-base between HEAD and the given ref.
     #[arg(long = "merge-base")]
     pub merge_base: Option<String>,
+    /// warn reports findings with exit 0; enforce returns a failing exit for active findings.
     #[arg(long, value_enum, default_value_t = LintMode::Warn)]
     pub mode: LintMode,
+    /// Output format. JSON stdout is intended for automation.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub format: OutputFormat,
+    /// Amount of diagnostic detail to render in the paged stdout view.
     #[arg(long, value_enum, default_value_t = DiagnosticDetail::Compact)]
     pub detail: DiagnosticDetail,
+    /// 1-based diagnostics page for stdout report rendering.
     #[arg(long, default_value_t = 1, value_parser = parse_positive_usize)]
     pub diagnostics_page: usize,
+    /// Number of diagnostics to render per stdout page.
     #[arg(long, default_value_t = 5, value_parser = parse_positive_usize)]
     pub diagnostics_page_size: usize,
+    /// Return a failing exit when changed paths are outside configured coverage.
     #[arg(long, default_value_t = false)]
     pub fail_on_uncovered_change: bool,
+    /// Return a failing exit when matched governed docs are critically stale.
     #[arg(long, default_value_t = false)]
     pub fail_on_stale_docs: bool,
+    /// Baseline file used to suppress already-accepted diagnostics.
     #[arg(long)]
     pub baseline: Option<PathBuf>,
+    /// Waiver file used to suppress approved diagnostics.
     #[arg(long)]
     pub waivers: Option<PathBuf>,
+    /// Full diagnostics artifact path. The stdout report remains paged.
     #[arg(long)]
     pub output: Option<PathBuf>,
 }
@@ -82,9 +106,15 @@ pub enum BaselineCommands {
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Example:
+  docpact baseline create --report .docpact/runs/latest.json --output .docpact/baseline.json
+
+Creates a baseline from a full diagnostics artifact, not from the paged lint stdout report.")]
 pub struct BaselineCreateArgs {
+    /// Full diagnostics artifact created by `docpact lint --output`.
     #[arg(long)]
     pub report: PathBuf,
+    /// Baseline JSON file to write.
     #[arg(long)]
     pub output: PathBuf,
 }
@@ -101,105 +131,175 @@ pub enum WaiverCommands {
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Example:
+  docpact waiver add --report .docpact/runs/latest.json --id d001 --reason \"legacy migration\" --owner docs-team --expires-at 2026-05-01 --waivers .docpact/waivers.yaml
+
+Use diagnostics ids from `docpact lint --output` and optionally narrow the waiver with --scope-rule-id or --scope-path.")]
 pub struct WaiverAddArgs {
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Full diagnostics artifact containing the diagnostic id.
     #[arg(long)]
     pub report: PathBuf,
+    /// Diagnostic id to waive, for example d001.
     #[arg(long)]
     pub id: String,
+    /// Human-readable waiver reason.
     #[arg(long)]
     pub reason: String,
+    /// Owner responsible for the waiver.
     #[arg(long)]
     pub owner: String,
+    /// Expiration date in YYYY-MM-DD format.
     #[arg(long = "expires-at", value_parser = parse_iso_date)]
     pub expires_at: String,
+    /// Optional rule id scope. May be repeated.
     #[arg(long = "scope-rule-id")]
     pub scope_rule_ids: Vec<String>,
+    /// Optional path scope. May be repeated.
     #[arg(long = "scope-path")]
     pub scope_paths: Vec<String>,
+    /// Waiver YAML file to update.
     #[arg(long)]
     pub waivers: PathBuf,
+    /// Output format.
     #[arg(long, value_enum, default_value_t = WaiverOutputFormat::Text)]
     pub format: WaiverOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Example:
+  docpact coverage --root . --format json
+
+Reports effective coverage include/exclude patterns and uncovered tracked-path candidates.")]
 pub struct CoverageArgs {
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Explicit config file. Defaults to .docpact/config.yaml under --root.
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Output format.
     #[arg(long, value_enum, default_value_t = CoverageOutputFormat::Text)]
     pub format: CoverageOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Examples:
+  docpact route --root . --paths src/api/client.ts --format json
+  docpact route --root . --module src/payments --format text
+  docpact route --root . --intent payments --detail full
+
+Use --paths when target files are known, --module for a repo-relative prefix, and --intent only for aliases listed by `docpact render --view routing-summary`.")]
 pub struct RouteArgs {
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Explicit config file. Defaults to .docpact/config.yaml under --root.
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Comma-separated repo-relative paths or globs.
     #[arg(long)]
     pub paths: Option<String>,
+    /// Comma-separated repo-relative path prefixes. Glob syntax is not accepted.
     #[arg(long, value_delimiter = ',')]
     pub module: Vec<String>,
+    /// Comma-separated controlled aliases from effective routing.intents.
     #[arg(long, value_delimiter = ',')]
     pub intent: Vec<String>,
+    /// compact is short by default; full includes provenance and scoring detail.
     #[arg(long, value_enum, default_value_t = RouteDetail::Compact)]
     pub detail: RouteDetail,
+    /// Limit text rows only. JSON still returns the full recommendation set.
     #[arg(long, value_parser = parse_positive_usize)]
     pub limit: Option<usize>,
+    /// Output format.
     #[arg(long, value_enum, default_value_t = RouteOutputFormat::Text)]
     pub format: RouteOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Examples:
+  docpact render --root . --view routing-summary --format text
+  docpact render --root . --view navigation-summary --paths src/api/client.ts --format json
+  docpact render --root . --view catalog-summary --format text
+
+Only navigation-summary accepts --paths, --module, and --intent. Use routing-summary to discover effective route intents.")]
 pub struct RenderArgs {
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Explicit config file. Defaults to .docpact/config.yaml under --root.
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Read-only derived view to render.
     #[arg(long, value_enum)]
     pub view: RenderView,
+    /// Navigation-summary only: comma-separated repo-relative paths or globs.
     #[arg(long)]
     pub paths: Option<String>,
+    /// Navigation-summary only: comma-separated repo-relative path prefixes.
     #[arg(long, value_delimiter = ',')]
     pub module: Vec<String>,
+    /// Navigation-summary only: comma-separated controlled intent aliases.
     #[arg(long, value_delimiter = ',')]
     pub intent: Vec<String>,
+    /// Limit text rows only. JSON still returns the full derived structure.
     #[arg(long, value_parser = parse_positive_usize)]
     pub limit: Option<usize>,
+    /// Output format.
     #[arg(long, value_enum, default_value_t = RenderOutputFormat::Text)]
     pub format: RenderOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Example:
+  docpact list-rules --root . --format json
+
+Lists effective rules after workspace inheritance and overrides.")]
 pub struct ListRulesArgs {
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Explicit config file. Defaults to .docpact/config.yaml under --root.
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Output format.
     #[arg(long, value_enum, default_value_t = ListRulesOutputFormat::Text)]
     pub format: ListRulesOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Example:
+  docpact doctor --root . --format json
+
+Checks higher-level workspace/catalog/ownership consistency and emits machine-readable findings in JSON.")]
 pub struct DoctorArgs {
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Explicit config file. Defaults to .docpact/config.yaml under --root.
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Output format.
     #[arg(long, value_enum, default_value_t = DoctorOutputFormat::Text)]
     pub format: DoctorOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Example:
+  docpact freshness --root . --format json
+
+Audits lastReviewedAt / lastReviewedCommit metadata against current repo history.")]
 pub struct FreshnessArgs {
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Explicit config file. Defaults to .docpact/config.yaml under --root.
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Output format.
     #[arg(long, value_enum, default_value_t = FreshnessOutputFormat::Text)]
     pub format: FreshnessOutputFormat,
 }
@@ -216,11 +316,19 @@ pub enum DiagnosticsCommands {
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Example:
+  docpact diagnostics show --report .docpact/runs/latest.json --id d001
+  docpact diagnostics show --report .docpact/runs/latest.json --id d001 --format json
+
+Reads the full diagnostics artifact produced by `docpact lint --output` or the default run path.")]
 pub struct DiagnosticsShowArgs {
+    /// Full diagnostics artifact path.
     #[arg(long)]
     pub report: PathBuf,
+    /// Diagnostic id to inspect, for example d001.
     #[arg(long)]
     pub id: String,
+    /// Output format.
     #[arg(long, value_enum, default_value_t = DiagnosticsOutputFormat::Text)]
     pub format: DiagnosticsOutputFormat,
 }
@@ -237,40 +345,75 @@ pub enum ReviewCommands {
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Examples:
+  docpact review mark --root . --path docs/api.md
+  docpact review mark --root . --report .docpact/runs/latest.json --id d001
+
+Use either one or more --path values, or --report with --id. Do not mix the two target modes.")]
 pub struct ReviewMarkArgs {
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Document path to mark as reviewed. May be repeated.
     #[arg(long = "path")]
     pub paths: Vec<PathBuf>,
+    /// Diagnostics report containing the finding to mark reviewed.
     #[arg(long)]
     pub report: Option<PathBuf>,
+    /// Diagnostic id from --report.
     #[arg(long)]
     pub id: Option<String>,
+    /// Review date in YYYY-MM-DD format. Defaults to today.
     #[arg(long, value_parser = parse_iso_date)]
     pub date: Option<String>,
+    /// Reviewed commit. Defaults to current HEAD.
     #[arg(long)]
     pub commit: Option<String>,
+    /// Output format.
     #[arg(long, value_enum, default_value_t = ReviewOutputFormat::Text)]
     pub format: ReviewOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Example:
+  docpact explain src/api/client.ts --root .
+  docpact explain src/api/client.ts --root . --format json
+
+Use route for read-first navigation; explain is a quick rule-match inspection helper.")]
 pub struct ExplainArgs {
+    /// Repo-relative path to explain.
     pub path: PathBuf,
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Explicit config file. Defaults to .docpact/config.yaml under --root.
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = ExplainOutputFormat::Text)]
+    pub format: ExplainOutputFormat,
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(after_help = "Examples:
+  docpact validate-config --root .
+  docpact validate-config --root . --strict
+  docpact validate-config --root . --strict --format json
+
+Default mode checks that config loads. --strict also validates graph consistency, routing aliases, ownership, coverage, freshness, and doc inventory.")]
 pub struct ValidateConfigArgs {
+    /// Repository root. Defaults to the current working directory.
     #[arg(long)]
     pub root: Option<PathBuf>,
+    /// Explicit config file. Defaults to .docpact/config.yaml under --root.
     #[arg(long)]
     pub config: Option<PathBuf>,
+    /// Run full structural and graph validation.
     #[arg(long, default_value_t = false)]
     pub strict: bool,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = ValidateConfigOutputFormat::Text)]
+    pub format: ValidateConfigOutputFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -321,6 +464,7 @@ pub enum RenderView {
     CatalogSummary,
     OwnershipSummary,
     NavigationSummary,
+    RoutingSummary,
     WorkspaceSummary,
 }
 
@@ -344,6 +488,18 @@ pub enum DiagnosticsOutputFormat {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ReviewOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ExplainOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ValidateConfigOutputFormat {
     Text,
     Json,
 }
@@ -413,13 +569,14 @@ fn parse_iso_date(value: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::{
         BaselineCommands, Cli, Commands, CoverageOutputFormat, DiagnosticDetail,
-        DiagnosticsCommands, DiagnosticsOutputFormat, DoctorOutputFormat, FreshnessOutputFormat,
-        LintMode, ListRulesOutputFormat, OutputFormat, ReviewCommands, ReviewOutputFormat,
-        RouteDetail, RouteOutputFormat, WaiverCommands, WaiverOutputFormat,
+        DiagnosticsCommands, DiagnosticsOutputFormat, DoctorOutputFormat, ExplainOutputFormat,
+        FreshnessOutputFormat, LintMode, ListRulesOutputFormat, OutputFormat, ReviewCommands,
+        ReviewOutputFormat, RouteDetail, RouteOutputFormat, ValidateConfigOutputFormat,
+        WaiverCommands, WaiverOutputFormat,
     };
 
     #[test]
@@ -794,14 +951,70 @@ mod tests {
 
     #[test]
     fn parses_validate_config_strict_flag() {
-        let cli = Cli::try_parse_from(["docpact", "validate-config", "--strict"])
-            .expect("cli should parse");
+        let cli =
+            Cli::try_parse_from(["docpact", "validate-config", "--strict", "--format", "json"])
+                .expect("cli should parse");
 
         match cli.command {
             Commands::ValidateConfig(args) => {
                 assert!(args.strict);
+                assert_eq!(args.format, ValidateConfigOutputFormat::Json);
             }
             _ => panic!("expected validate-config command"),
         }
+    }
+
+    #[test]
+    fn parses_explain_json_format() {
+        let cli = Cli::try_parse_from([
+            "docpact",
+            "explain",
+            "src/api/client.ts",
+            "--root",
+            ".",
+            "--format",
+            "json",
+        ])
+        .expect("cli should parse");
+
+        match cli.command {
+            Commands::Explain(args) => {
+                assert_eq!(args.path, std::path::PathBuf::from("src/api/client.ts"));
+                assert_eq!(args.format, ExplainOutputFormat::Json);
+            }
+            _ => panic!("expected explain command"),
+        }
+    }
+
+    #[test]
+    fn core_help_mentions_examples_and_json_contracts() {
+        let mut command = Cli::command();
+        let help = command.render_long_help().to_string();
+
+        assert!(help.contains("Diff-driven documentation drift gate"));
+        assert!(help.contains("lint"));
+
+        let mut route = Cli::command()
+            .find_subcommand_mut("route")
+            .expect("route command exists")
+            .clone();
+        let route_help = route.render_long_help().to_string();
+        assert!(route_help.contains("Examples:"));
+        assert!(route_help.contains("routing-summary"));
+
+        let mut diagnostics = Cli::command()
+            .find_subcommand_mut("diagnostics")
+            .expect("diagnostics command exists")
+            .clone();
+        let diagnostics_help = diagnostics.render_long_help().to_string();
+        assert!(diagnostics_help.contains("show"));
+
+        let mut validate = Cli::command()
+            .find_subcommand_mut("validate-config")
+            .expect("validate-config command exists")
+            .clone();
+        let validate_help = validate.render_long_help().to_string();
+        assert!(validate_help.contains("--format"));
+        assert!(validate_help.contains("--strict --format json"));
     }
 }

@@ -12,7 +12,7 @@ use crate::cli::{WaiverAddArgs, WaiverArgs, WaiverCommands, WaiverOutputFormat};
 use crate::config::{normalize_path, root_dir_from_option};
 use crate::diagnostics::read_diagnostics_artifact;
 use crate::reporters::{
-    DiagnosticRecord, DiagnosticsArtifact, ExpiredWaiver, refresh_finding_summaries,
+    DiagnosticRecord, DiagnosticsArtifact, ExpiredWaiver, OutputWarning, refresh_finding_summaries,
 };
 use crate::rules::matches_pattern;
 
@@ -53,6 +53,11 @@ impl WaiverScope {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct WaiverAddResult {
+    schema_version: String,
+    tool_name: String,
+    tool_version: String,
+    command: String,
+    warnings: Vec<OutputWarning>,
     status: String,
     created: bool,
     waiver_count: usize,
@@ -126,6 +131,11 @@ fn add(args: WaiverAddArgs) -> Result<AppExit> {
 
     emit_add_result(
         WaiverAddResult {
+            schema_version: "docpact.waiver-add.v1".into(),
+            tool_name: env!("CARGO_PKG_NAME").into(),
+            tool_version: env!("CARGO_PKG_VERSION").into(),
+            command: "waiver add".into(),
+            warnings: Vec::new(),
             status: "ok".into(),
             created,
             waiver_count: file.waivers.len(),

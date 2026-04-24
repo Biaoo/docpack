@@ -16,14 +16,17 @@ use crate::freshness::{FreshnessItem, RouteFreshnessTarget, execute_route_freshn
 use crate::git::get_tracked_paths;
 use crate::rules::{RequiredDocMode, matches_pattern};
 
-pub const ROUTE_SCHEMA_VERSION: &str = "docpact.route.v3";
+pub const ROUTE_SCHEMA_VERSION: &str = "docpact.route.v4";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct RouteReport {
     pub schema_version: String,
     pub tool_name: String,
     pub tool_version: String,
+    pub command: String,
     pub summary: RouteSummary,
+    #[serde(default)]
+    pub warnings: Vec<RouteWarning>,
     pub governed_docs: Vec<RouteRecommendation>,
     pub advisory_docs: Vec<RouteAdvisoryDoc>,
 }
@@ -38,6 +41,13 @@ pub struct RouteSummary {
     pub advisory_doc_count: usize,
     pub freshness_warning_count: usize,
     pub critical_freshness_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RouteWarning {
+    pub code: String,
+    pub input: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -139,6 +149,7 @@ struct PreparedInputs {
     module_count: usize,
     intent_count: usize,
     resolved_inputs: Vec<ResolvedInput>,
+    warnings: Vec<RouteWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,11 +312,30 @@ fn execute_with_today(args: &RouteArgs, today: &str) -> Result<RouteReport> {
         .iter()
         .filter(|item| item.freshness_level == "critical")
         .count();
+    let mut warnings = prepared_inputs.warnings;
+    if !analyzed_paths.is_empty() && matched_rule_keys.is_empty() {
+        warnings.push(RouteWarning {
+            code: "no-rule-matches".into(),
+            input: analyzed_paths.join(","),
+            message: "Route inputs resolved to tracked paths, but no rule triggers matched them."
+                .into(),
+        });
+    }
+    if !analyzed_paths.is_empty() && governed_docs.is_empty() && advisory_docs.is_empty() {
+        warnings.push(RouteWarning {
+            code: "no-route-recommendations".into(),
+            input: analyzed_paths.join(","),
+            message:
+                "Route inputs resolved to paths, but produced no governed docs or advisory docs."
+                    .into(),
+        });
+    }
 
     Ok(RouteReport {
         schema_version: ROUTE_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "route".into(),
         summary: RouteSummary {
             input_path_count: prepared_inputs.explicit_path_count,
             module_input_count: prepared_inputs.module_count,
@@ -316,6 +346,7 @@ fn execute_with_today(args: &RouteArgs, today: &str) -> Result<RouteReport> {
             freshness_warning_count,
             critical_freshness_count,
         },
+        warnings,
         governed_docs,
         advisory_docs,
     })
@@ -350,9 +381,13 @@ fn build_recommendation(
         .map(|item| item.review_reference_problems.clone())
         .unwrap_or_default();
     let freshness_warning = build_freshness_warning(freshness);
-    let ownership_context =
-        build_governed_ownership_context(&entry.matched_candidate_paths, ownership_index, include_sources);
-    let repo_context = build_governed_repo_context(&entry.matched_candidate_paths, catalog_path_index);
+    let ownership_context = build_governed_ownership_context(
+        &entry.matched_candidate_paths,
+        ownership_index,
+        include_sources,
+    );
+    let repo_context =
+        build_governed_repo_context(&entry.matched_candidate_paths, catalog_path_index);
     let tie_break_context = RouteGovernedTieBreak {
         ownership_context_present: ownership_context.is_some(),
         repo_context_present: repo_context.is_some(),
@@ -542,6 +577,7 @@ fn prepare_inputs(
 
     let tracked_paths = get_tracked_paths(root_dir)?;
     let mut resolved_inputs = Vec::new();
+    let mut warnings = Vec::new();
 
     for input in &explicit_paths {
         if has_glob_syntax(input) {
@@ -550,6 +586,9 @@ fn prepare_inputs(
                 .filter(|tracked| matches_pattern(tracked, input))
                 .cloned()
                 .collect::<Vec<_>>();
+            if candidates.is_empty() {
+                warnings.push(no_tracked_path_matches_warning(input));
+            }
             resolved_inputs.push(ResolvedInput {
                 original: input.clone(),
                 candidates,
@@ -575,6 +614,9 @@ fn prepare_inputs(
             .filter(|tracked| matches_module_scope(tracked, &prefix))
             .cloned()
             .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            warnings.push(no_tracked_path_matches_warning(&format!("module:{prefix}")));
+        }
         resolved_inputs.push(ResolvedInput {
             original: format!("module:{prefix}"),
             candidates,
@@ -584,7 +626,16 @@ fn prepare_inputs(
     let intent_index = build_intent_index(routing_configs)?;
     for intent in &intents {
         let Some(patterns) = intent_index.get(intent) else {
-            bail!("Unknown routing intent alias `{intent}`.");
+            let available = intent_index.keys().cloned().collect::<Vec<_>>();
+            if available.is_empty() {
+                bail!(
+                    "Unknown routing intent alias `{intent}`. No routing intent aliases are configured. Try `docpact render --view routing-summary --format text` to inspect effective routing configuration."
+                );
+            }
+            bail!(
+                "Unknown routing intent alias `{intent}`. Available aliases: {}. Try `docpact render --view routing-summary --format text` to inspect effective routing configuration.",
+                available.join(", ")
+            );
         };
 
         let candidates = tracked_paths
@@ -596,6 +647,9 @@ fn prepare_inputs(
             })
             .cloned()
             .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            warnings.push(no_tracked_path_matches_warning(&format!("intent:{intent}")));
+        }
         resolved_inputs.push(ResolvedInput {
             original: format!("intent:{intent}"),
             candidates,
@@ -607,7 +661,16 @@ fn prepare_inputs(
         module_count: modules.len(),
         intent_count: intents.len(),
         resolved_inputs,
+        warnings,
     })
+}
+
+fn no_tracked_path_matches_warning(input: &str) -> RouteWarning {
+    RouteWarning {
+        code: "no-tracked-path-matches".into(),
+        input: input.into(),
+        message: "Route input did not match any git tracked paths before rule matching.".into(),
+    }
 }
 
 fn parse_optional_csv_inputs(values: Option<&str>) -> Result<Vec<String>> {
@@ -887,10 +950,12 @@ fn build_catalog_path_index(
             for repo in &loaded.catalog.repos {
                 let repo_root = resolve_catalog_repo_root(&loaded.base_dir, &repo.path);
                 if matches_catalog_repo_scope(candidate_path, &repo_root) {
-                    index.entry(candidate_path.clone()).or_insert_with(|| CatalogPathContext {
-                        repo_id: repo.id.clone(),
-                        canonical_repo: repo.canonical_repo.clone(),
-                    });
+                    index
+                        .entry(candidate_path.clone())
+                        .or_insert_with(|| CatalogPathContext {
+                            repo_id: repo.id.clone(),
+                            canonical_repo: repo.canonical_repo.clone(),
+                        });
                 }
             }
         }
@@ -996,9 +1061,16 @@ fn emit_report(
 
 fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<usize>) -> String {
     let mut output = String::new();
-    output.push_str("Docpact route recommendations:\n");
+    let status = if report.governed_docs.is_empty() && report.advisory_docs.is_empty() {
+        "no document recommendations"
+    } else if report.summary.critical_freshness_count > 0 {
+        "recommendations include critically stale docs"
+    } else {
+        "recommendations ready"
+    };
+    output.push_str(&format!("Docpact route: {status}.\n"));
     output.push_str(&format!(
-        "Summary: input_paths={} modules={} intents={} matched_rules={} governed_docs={} advisory_docs={} freshness_warnings={} critical_freshness={}\n",
+        "Summary: inputs={}, modules={}, intents={}, matched_rules={}, governed_docs={}, advisory_docs={}, freshness_warnings={}, critical_freshness={}\n",
         report.summary.input_path_count,
         report.summary.module_input_count,
         report.summary.intent_input_count,
@@ -1008,6 +1080,15 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
         report.summary.freshness_warning_count,
         report.summary.critical_freshness_count,
     ));
+    if !report.warnings.is_empty() {
+        output.push_str("Warnings:\n");
+        for warning in &report.warnings {
+            output.push_str(&format!(
+                "- {} for {}: {}\n",
+                warning.code, warning.input, warning.message
+            ));
+        }
+    }
 
     let governed_displayed = limit
         .map(|value| value.min(report.governed_docs.len()))
@@ -1027,7 +1108,7 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
     } else {
         for recommendation in report.governed_docs.iter().take(governed_displayed) {
             output.push_str(&format!(
-                "- path={} priority={} freshness={} rules={} inputs={}\n",
+                "- review or update {} (priority: {}, freshness: {}, rules: {}, inputs: {})\n",
                 recommendation.path,
                 recommendation.priority,
                 recommendation.freshness_level,
@@ -1038,7 +1119,7 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
             if detail == RouteDetail::Compact {
                 if let Some(context) = &recommendation.ownership_context {
                     output.push_str(&format!(
-                        "  ownership owners={} non_owners={} domains={}\n",
+                        "  ownership: owners={}, non_owners={}, domains={}\n",
                         join_or_dash(&context.owner_repos),
                         join_or_dash(&context.non_owner_repos),
                         join_or_dash(&context.domain_ids),
@@ -1046,27 +1127,27 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
                 }
                 if let Some(context) = &recommendation.repo_context {
                     output.push_str(&format!(
-                        "  repo_context repos={} canonical_repos={}\n",
+                        "  repo context: repos={}, canonical_repos={}\n",
                         join_or_dash(&context.repo_ids),
                         join_or_dash(&context.canonical_repos),
                     ));
                 }
                 if let Some(warning) = &recommendation.freshness_warning {
-                    output.push_str(&format!("  freshness_warning={warning}\n"));
+                    output.push_str(&format!("  freshness warning: {warning}\n"));
                 }
                 continue;
             }
 
             output.push_str(&format!(
-                "  triggers={}\n",
+                "  triggers: {}\n",
                 recommendation.match_reason.matched_trigger_paths.join(",")
             ));
             output.push_str(&format!(
-                "  modes={}\n",
+                "  modes: {}\n",
                 recommendation.match_reason.modes.join(",")
             ));
             output.push_str(&format!(
-                "  score mode={} specificity={} matched_inputs={} matched_rules={} freshness_penalty={} total={}\n",
+                "  score: mode={}, specificity={}, matched_inputs={}, matched_rules={}, freshness_penalty={}, total={}\n",
                 recommendation.score_breakdown.mode_score,
                 recommendation.score_breakdown.specificity_score,
                 recommendation.score_breakdown.matched_input_count,
@@ -1075,43 +1156,43 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
                 recommendation.score_breakdown.total_score,
             ));
             if let Some(warning) = &recommendation.freshness_warning {
-                output.push_str(&format!("  freshness_warning={warning}\n"));
+                output.push_str(&format!("  freshness warning: {warning}\n"));
             }
             if !recommendation.review_reference_problems.is_empty() {
                 output.push_str(&format!(
-                    "  review_reference_problems={}\n",
+                    "  review reference problems: {}\n",
                     recommendation.review_reference_problems.join(",")
                 ));
             }
             if let Some(context) = &recommendation.ownership_context {
                 output.push_str(&format!(
-                    "  ownership owners={} non_owners={} domains={}\n",
+                    "  ownership: owners={}, non_owners={}, domains={}\n",
                     join_or_dash(&context.owner_repos),
                     join_or_dash(&context.non_owner_repos),
                     join_or_dash(&context.domain_ids),
                 ));
                 if !context.matched_patterns.is_empty() {
                     output.push_str(&format!(
-                        "  ownership_patterns={}\n",
+                        "  ownership patterns: {}\n",
                         context.matched_patterns.join(",")
                     ));
                 }
                 if !context.domain_sources.is_empty() {
                     output.push_str(&format!(
-                        "  ownership_sources={}\n",
+                        "  ownership sources: {}\n",
                         context.domain_sources.join(",")
                     ));
                 }
             }
             if let Some(context) = &recommendation.repo_context {
                 output.push_str(&format!(
-                    "  repo_context repos={} canonical_repos={}\n",
+                    "  repo context: repos={}, canonical_repos={}\n",
                     join_or_dash(&context.repo_ids),
                     join_or_dash(&context.canonical_repos),
                 ));
             }
             output.push_str(&format!(
-                "  tie_break ownership_context={} repo_context={} owner_repo_count={} repo_context_count={}\n",
+                "  tie break: ownership_context={}, repo_context={}, owner_repo_count={}, repo_context_count={}\n",
                 recommendation.tie_break_context.ownership_context_present,
                 recommendation.tie_break_context.repo_context_present,
                 recommendation.tie_break_context.owner_repo_count,
@@ -1119,13 +1200,13 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
             ));
             if !recommendation.config_sources.is_empty() {
                 output.push_str(&format!(
-                    "  config_sources={}\n",
+                    "  config sources: {}\n",
                     recommendation.config_sources.join(",")
                 ));
             }
             if !recommendation.rule_sources.is_empty() {
                 output.push_str(&format!(
-                    "  rule_sources={}\n",
+                    "  rule sources: {}\n",
                     recommendation.rule_sources.join(",")
                 ));
             }
@@ -1147,49 +1228,56 @@ fn render_text_report(report: &RouteReport, detail: RouteDetail, limit: Option<u
 
     if report.advisory_docs.is_empty() {
         output.push_str("- none\n");
-        return output;
-    }
-
-    for advisory in report.advisory_docs.iter().take(advisory_displayed) {
-        output.push_str(&format!(
-            "- path={} repo={} pointers={} inputs={}\n",
-            advisory.path,
-            advisory.repo_id,
-            advisory.pointer_types.join(","),
-            advisory.matched_input_paths.join(","),
-        ));
-
-        if detail == RouteDetail::Compact {
+    } else {
+        for advisory in report.advisory_docs.iter().take(advisory_displayed) {
             output.push_str(&format!(
-                "  why_read_first={} canonical_repo={}\n",
+                "- read first {} (repo: {}, pointers: {}, inputs: {})\n",
+                advisory.path,
+                advisory.repo_id,
+                advisory.pointer_types.join(","),
+                advisory.matched_input_paths.join(","),
+            ));
+
+            if detail == RouteDetail::Compact {
+                output.push_str(&format!(
+                    "  why read first: {}; canonical_repo={}\n",
+                    advisory.pointer_types.join(","),
+                    advisory.canonical_repo.as_deref().unwrap_or("-"),
+                ));
+                continue;
+            }
+
+            output.push_str(&format!(
+                "  why read first: {}; canonical_repo={}\n",
                 advisory.pointer_types.join(","),
                 advisory.canonical_repo.as_deref().unwrap_or("-"),
             ));
-            continue;
+            output.push_str(&format!(
+                "  tie break: pointer_priority={}, matched_inputs={}\n",
+                advisory.tie_break_context.pointer_priority,
+                advisory.tie_break_context.matched_input_count,
+            ));
+            if !advisory.config_sources.is_empty() {
+                output.push_str(&format!(
+                    "  config sources: {}\n",
+                    advisory.config_sources.join(",")
+                ));
+            }
+            if !advisory.pointer_sources.is_empty() {
+                output.push_str(&format!(
+                    "  pointer sources: {}\n",
+                    advisory.pointer_sources.join(",")
+                ));
+            }
         }
+    }
 
-        output.push_str(&format!(
-            "  why_read_first={} canonical_repo={}\n",
-            advisory.pointer_types.join(","),
-            advisory.canonical_repo.as_deref().unwrap_or("-"),
-        ));
-        output.push_str(&format!(
-            "  tie_break pointer_priority={} matched_inputs={}\n",
-            advisory.tie_break_context.pointer_priority,
-            advisory.tie_break_context.matched_input_count,
-        ));
-        if !advisory.config_sources.is_empty() {
-            output.push_str(&format!(
-                "  config_sources={}\n",
-                advisory.config_sources.join(",")
-            ));
-        }
-        if !advisory.pointer_sources.is_empty() {
-            output.push_str(&format!(
-                "  pointer_sources={}\n",
-                advisory.pointer_sources.join(",")
-            ));
-        }
+    if report.governed_docs.is_empty() && report.advisory_docs.is_empty() {
+        output.push_str("Next: inspect warnings above, or run `docpact render --view routing-summary --format text` to discover intent aliases.\n");
+    } else {
+        output.push_str(
+            "Next: read governed docs first, then advisory docs for workspace context.\n",
+        );
     }
 
     output
@@ -1410,7 +1498,10 @@ rules:
         let recommendation = &report.governed_docs[0];
 
         assert_eq!(
-            recommendation.ownership_context.as_ref().map(|context| &context.owner_repos),
+            recommendation
+                .ownership_context
+                .as_ref()
+                .map(|context| &context.owner_repos),
             Some(&vec!["demo".to_string()])
         );
         assert_eq!(
@@ -1443,13 +1534,13 @@ rules:
         );
 
         let compact = render_text_report(&report, RouteDetail::Compact, None);
-        assert!(compact.contains("ownership owners=demo non_owners=app-shell domains=payments"));
-        assert!(compact.contains("repo_context repos=demo canonical_repos=Biaoo/docpack"));
+        assert!(compact.contains("ownership: owners=demo, non_owners=app-shell, domains=payments"));
+        assert!(compact.contains("repo context: repos=demo, canonical_repos=Biaoo/docpack"));
 
         let full = render_text_report(&report, RouteDetail::Full, None);
-        assert!(full.contains("ownership_patterns=src/payments/**"));
-        assert!(full.contains("ownership_sources=.docpact/config.yaml"));
-        assert!(full.contains("tie_break ownership_context=true repo_context=true"));
+        assert!(full.contains("ownership patterns: src/payments/**"));
+        assert!(full.contains("ownership sources: .docpact/config.yaml"));
+        assert!(full.contains("tie break: ownership_context=true, repo_context=true"));
     }
 
     #[test]
@@ -1519,16 +1610,26 @@ rules: []
             report.advisory_docs[0].canonical_repo.as_deref(),
             Some("Biaoo/docpack")
         );
-        assert_eq!(report.advisory_docs[0].tie_break_context.pointer_priority, 40);
-        assert_eq!(report.advisory_docs[0].tie_break_context.matched_input_count, 1);
+        assert_eq!(
+            report.advisory_docs[0].tie_break_context.pointer_priority,
+            40
+        );
+        assert_eq!(
+            report.advisory_docs[0]
+                .tie_break_context
+                .matched_input_count,
+            1
+        );
         assert_eq!(
             report.advisory_docs[0].pointer_sources,
             vec![".docpact/config.yaml#catalog.repos.demo.entryDoc".to_string()]
         );
 
         let rendered = render_text_report(&report, RouteDetail::Full, Some(1));
-        assert!(rendered.contains("why_read_first=entryDoc canonical_repo=Biaoo/docpack"));
-        assert!(rendered.contains("pointer_sources=.docpact/config.yaml#catalog.repos.demo.entryDoc"));
+        assert!(rendered.contains("why read first: entryDoc; canonical_repo=Biaoo/docpack"));
+        assert!(
+            rendered.contains("pointer sources: .docpact/config.yaml#catalog.repos.demo.entryDoc")
+        );
     }
 
     #[test]
@@ -1721,6 +1822,59 @@ rules: []
                 .to_string()
                 .contains("Unknown routing intent alias `missing`")
         );
+        assert!(
+            error
+                .to_string()
+                .contains("No routing intent aliases are configured")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("docpact render --view routing-summary")
+        );
+    }
+
+    #[test]
+    fn route_unknown_intent_lists_available_aliases() {
+        let root = temp_dir("docpact-route-unknown-intent-available");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+routing:
+  intents:
+    api:
+      paths:
+        - src/api/**
+    auth:
+      paths:
+        - src/auth/**
+repo:
+  id: demo
+rules: []
+"#,
+        )
+        .expect("config should be written");
+        git(&root, &["add", "."]);
+
+        let mut args = base_args(root.clone(), "");
+        args.paths = None;
+        args.intent = vec!["missing".into()];
+        let error = execute_with_today(&args, "2026-04-22").expect_err("route should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Unknown routing intent alias `missing`")
+        );
+        assert!(error.to_string().contains("Available aliases: api, auth"));
+        assert!(
+            error
+                .to_string()
+                .contains("docpact render --view routing-summary")
+        );
     }
 
     #[test]
@@ -1765,6 +1919,47 @@ rules:
         assert_eq!(report.summary.advisory_doc_count, 0);
         assert!(report.governed_docs.is_empty());
         assert!(report.advisory_docs.is_empty());
+        assert_eq!(report.warnings.len(), 2);
+        assert_eq!(report.warnings[0].code, "no-rule-matches");
+        assert_eq!(report.warnings[1].code, "no-route-recommendations");
+        let rendered = render_text_report(&report, RouteDetail::Compact, None);
+        assert!(rendered.contains("Warnings:"));
+        assert!(rendered.contains("no-rule-matches for"));
+    }
+
+    #[test]
+    fn route_warns_when_glob_or_module_matches_no_tracked_paths() {
+        let root = temp_dir("docpact-route-empty-candidates");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/auth")).expect("auth dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+repo:
+  id: demo
+rules: []
+"#,
+        )
+        .expect("config should be written");
+        fs::write(root.join("src/auth/login.ts"), "export const login = 1;\n")
+            .expect("source file should be written");
+        git(&root, &["add", "."]);
+
+        let mut args = base_args(root.clone(), "src/payments/**");
+        args.module = vec!["src/missing".into()];
+        let report = execute_with_today(&args, "2026-04-22").expect("route report");
+
+        assert_eq!(report.summary.input_path_count, 1);
+        assert_eq!(report.summary.module_input_count, 1);
+        assert_eq!(report.warnings.len(), 2);
+        assert_eq!(report.warnings[0].code, "no-tracked-path-matches");
+        assert_eq!(report.warnings[0].input, "src/payments/**");
+        assert_eq!(report.warnings[1].code, "no-tracked-path-matches");
+        assert_eq!(report.warnings[1].input, "module:src/missing");
     }
 
     #[test]
@@ -1961,15 +2156,15 @@ rules:
         assert_eq!(recommendation.rule_sources, vec![".docpact/config.yaml"]);
 
         let rendered = render_text_report(&report, RouteDetail::Full, Some(1));
-        assert!(rendered.contains("priority="));
-        assert!(rendered.contains("freshness="));
+        assert!(rendered.contains("priority:"));
+        assert!(rendered.contains("freshness:"));
         assert!(rendered.contains("Governed docs:"));
         assert!(rendered.contains("Advisory docs:"));
-        assert!(rendered.contains("triggers=src/api/**"));
-        assert!(rendered.contains("score mode="));
+        assert!(rendered.contains("triggers: src/api/**"));
+        assert!(rendered.contains("score: mode="));
         assert!(rendered.contains("freshness_penalty="));
-        assert!(rendered.contains("config_sources=.docpact/config.yaml"));
-        assert!(rendered.contains("rule_sources=.docpact/config.yaml"));
+        assert!(rendered.contains("config sources: .docpact/config.yaml"));
+        assert!(rendered.contains("rule sources: .docpact/config.yaml"));
     }
 
     #[test]
@@ -2024,7 +2219,10 @@ rules:
         .expect("route report should execute");
         let rendered = render_text_report(&report, RouteDetail::Compact, Some(1));
         assert!(rendered.contains("Governed docs (showing 1 of 2)"));
-        assert!(rendered.contains("path=docs/a.md") || rendered.contains("path=docs/b.md"));
+        assert!(
+            rendered.contains("review or update docs/a.md")
+                || rendered.contains("review or update docs/b.md")
+        );
     }
 
     #[test]
@@ -2074,8 +2272,8 @@ rules:
         assert!(rendered.contains("advisory_docs=1"));
         assert!(rendered.contains("Governed docs:"));
         assert!(rendered.contains("Advisory docs:"));
-        assert!(rendered.contains("path=docs/api.md"));
-        assert!(rendered.contains("path=AGENTS.md"));
+        assert!(rendered.contains("review or update docs/api.md"));
+        assert!(rendered.contains("read first AGENTS.md"));
     }
 
     #[test]

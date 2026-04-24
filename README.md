@@ -69,6 +69,7 @@ Example:
 ```bash
 docpact validate-config --root /path/to/repo
 docpact validate-config --root /path/to/repo --strict
+docpact validate-config --root /path/to/repo --strict --format json
 docpact lint --root /path/to/repo --files src/api/client.ts,README.md --format text
 ```
 
@@ -87,6 +88,7 @@ docpact lint --root /path/to/repo --files src/api/client.ts,README.md --format t
 ```bash
 docpact validate-config --root /path/to/repo
 docpact validate-config --root /path/to/repo --strict
+docpact validate-config --root /path/to/repo --strict --format json
 ```
 
 ### Check a concrete change
@@ -95,10 +97,18 @@ docpact validate-config --root /path/to/repo --strict
 docpact lint --root /path/to/repo --files src/api/client.ts,README.md --format json --output .docpact/runs/latest.json
 ```
 
+`lint --format json` stdout is a paged `docpact.lint-report.v1` report. The saved diagnostics artifact is the full drill-down store used by `diagnostics show`.
+
 ### Drill into one finding
 
 ```bash
 docpact diagnostics show --report .docpact/runs/latest.json --id d001 --format json
+```
+
+For rule-match inspection without replaying lint:
+
+```bash
+docpact explain src/api/client.ts --root /path/to/repo --format json
 ```
 
 ### Record completed review evidence
@@ -130,6 +140,7 @@ docpact freshness --root /path/to/repo --format json
 ```bash
 docpact route --root /path/to/repo --paths src/payments/** --format json
 docpact route --root /path/to/repo --module src/payments --format text
+docpact render --root /path/to/repo --view routing-summary --format text
 docpact route --root /path/to/repo --intent payments --format json
 ```
 
@@ -137,6 +148,7 @@ docpact route --root /path/to/repo --intent payments --format json
 
 ```bash
 docpact render --root /path/to/repo --view catalog-summary --format json
+docpact render --root /path/to/repo --view routing-summary --format text
 docpact render --root /path/to/repo --view navigation-summary --paths src/payments/** --format text
 ```
 
@@ -198,7 +210,7 @@ Typical usage:
 ```yaml
 - uses: <org>/docpact@v1
   with:
-    version: 0.1.2
+    version: 0.1.3
     args: >
       lint
       --root .

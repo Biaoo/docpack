@@ -12,6 +12,7 @@ use crate::config::{
     normalize_path, path_relative_to, resolve_rule_path, root_dir_from_option,
 };
 use crate::git::get_tracked_paths;
+use crate::reporters::OutputWarning;
 
 pub const DOCTOR_SCHEMA_VERSION: &str = "docpact.doctor.v1";
 
@@ -31,6 +32,8 @@ pub struct DoctorReport {
     pub schema_version: String,
     pub tool_name: String,
     pub tool_version: String,
+    pub command: String,
+    pub warnings: Vec<OutputWarning>,
     pub summary: DoctorSummary,
     pub configs: Vec<DoctorConfig>,
     pub findings: Vec<DoctorFinding>,
@@ -423,6 +426,8 @@ fn report_with_findings(
         schema_version: DOCTOR_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "doctor".into(),
+        warnings: Vec::new(),
         summary,
         configs,
         findings,
@@ -440,7 +445,12 @@ fn emit_report(report: &DoctorReport, format: DoctorOutputFormat) {
 }
 
 fn emit_text_report(report: &DoctorReport) {
-    println!("Docpact doctor:");
+    let status = if report.findings.is_empty() {
+        "pass"
+    } else {
+        "attention required"
+    };
+    println!("Docpact doctor: {status}.");
     println!(
         "Summary: config_present={}, layout={}, effective_configs={}, inherited_configs={}, rule_count={}, catalog_repos={}, ownership_domains={}, ownership_overlaps={}, ownership_conflicts={}, coverage_configured={}, routing_configured={}, doc_inventory_configured={}, freshness_configured={}, routing_intents={}, governed_doc_count={}",
         report.summary.config_present,
@@ -465,27 +475,28 @@ fn emit_text_report(report: &DoctorReport) {
     } else {
         for config in &report.configs {
             println!(
-                "- source={} base_dir={} inherited={} profile={} rules={} catalog_repos={} ownership_domains={} governed_docs={} coverage_resolution={} routing_resolution={} doc_inventory_resolution={} freshness_resolution={} routing_intents={} overrides(add={},replace={},disable={})",
+                "- {}: {} rule(s), {} governed doc(s), routing intents={}, inherited={}, profile={}, base_dir={}",
                 config.source,
-                if config.base_dir.is_empty() {
-                    ".".to_string()
-                } else {
-                    config.base_dir.clone()
-                },
+                config.rule_count,
+                config.governed_doc_count,
+                config.routing_intent_count,
                 config.inheritance_enabled,
                 config
                     .workspace_profile
                     .clone()
                     .unwrap_or_else(|| "-".into()),
-                config.rule_count,
-                config.catalog_repo_count,
-                config.ownership_domain_count,
-                config.governed_doc_count,
+                if config.base_dir.is_empty() {
+                    ".".to_string()
+                } else {
+                    config.base_dir.clone()
+                },
+            );
+            println!(
+                "  coverage={}, routing={}, doc_inventory={}, freshness={}, overrides(add={}, replace={}, disable={})",
                 config.coverage_resolution,
                 config.routing_resolution,
                 config.doc_inventory_resolution,
                 config.freshness_resolution,
-                config.routing_intent_count,
                 config.override_add_count,
                 config.override_replace_count,
                 config.override_disable_count,
@@ -495,6 +506,9 @@ fn emit_text_report(report: &DoctorReport) {
     println!("Findings:");
     if report.findings.is_empty() {
         println!("- none");
+        println!(
+            "Next: run `docpact lint --root . <diff-source>` or `docpact route --paths <path>`."
+        );
         return;
     }
 
@@ -504,6 +518,7 @@ fn emit_text_report(report: &DoctorReport) {
             finding.severity, finding.code, finding.source, finding.message
         );
     }
+    println!("Next: fix the findings above, then rerun `docpact doctor --root .`.");
 }
 
 fn resolve_config_path(root_dir: &Path, config_override: Option<&Path>) -> PathBuf {
@@ -687,6 +702,8 @@ mod tests {
         let report = execute(&base_args(&root)).expect("doctor should execute");
 
         assert_eq!(report.schema_version, DOCTOR_SCHEMA_VERSION);
+        assert_eq!(report.command, "doctor");
+        assert!(report.warnings.is_empty());
         assert!(!report.summary.config_present);
         assert_eq!(report.summary.layout, "none");
         assert_eq!(report.findings.len(), 1);

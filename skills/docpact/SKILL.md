@@ -33,17 +33,20 @@ Choose the smallest stable input:
 
 - `--paths <csv>` for explicit target files or path globs
 - `--module <csv>` for a repo-relative module prefix
-- `--intent <csv>` only when the repo already defines controlled aliases in `routing.intents`
+- `--intent <csv>` only after checking effective aliases with `render --view routing-summary`
 
 Default commands:
 
 ```bash
 docpact route --root <repo> --paths <csv> --format json
 docpact route --root <repo> --module <prefix> --format json
+docpact render --root <repo> --view routing-summary --format json
 docpact route --root <repo> --intent <alias> --format json
 ```
 
 Use `--detail full` only when you need the score breakdown, matched triggers, or provenance. Start with compact JSON for agent efficiency.
+
+If route returns warnings such as `no-tracked-path-matches`, `no-rule-matches`, or `no-route-recommendations`, treat them as input/navigation ambiguity and inspect the target paths or routing configuration before assuming there are no documents to read.
 
 If the task only needs a shorter derived summary over the existing navigation result, use `render` instead of inventing a new route shape:
 
@@ -79,6 +82,8 @@ docpact lint --root <repo> <diff-source-args> --format json --output .docpact/ru
 
 Use a saved report path whenever the result may need drill-down.
 
+Treat `lint --format json` stdout as a paged `docpact.lint-report.v1` report. Treat `.docpact/runs/latest.json` as the full diagnostics artifact for drill-down. Do not assume stdout contains every diagnostic when pagination is active.
+
 If `lint` returns findings and you need to inspect one exact result, move immediately to:
 
 ```bash
@@ -86,6 +91,18 @@ docpact diagnostics show --report .docpact/runs/latest.json --id <diagnostic_id>
 ```
 
 If the task becomes "repair this one finding," stay inside this skill and load [references/failure-repair-workflow.md](./references/failure-repair-workflow.md). Treat it as an internal remediation workflow, not as a separate entrypoint.
+
+For rule-match debugging without a saved lint finding, use:
+
+```bash
+docpact explain <path> --root <repo> --format json
+```
+
+For config debugging, use:
+
+```bash
+docpact validate-config --root <repo> --strict --format json
+```
 
 ### 3. After coding: record completed review evidence
 
@@ -138,6 +155,7 @@ Typical commands:
 ```bash
 docpact render --root <repo> --view catalog-summary --format json
 docpact render --root <repo> --view ownership-summary --format json
+docpact render --root <repo> --view routing-summary --format json
 docpact render --root <repo> --view workspace-summary --format text
 ```
 
@@ -145,6 +163,7 @@ Use this path when you need:
 
 - deterministic repo entry and workflow pointers from `catalog`
 - ownership-domain summary without running full route detail
+- effective controlled route aliases before using `route --intent`
 - a short workspace-facing summary over catalog and ownership facts
 
 Do not use `render` as a replacement for:

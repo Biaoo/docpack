@@ -1,18 +1,67 @@
 use miette::Result;
+use serde::Serialize;
 
 use crate::AppExit;
-use crate::cli::ValidateConfigArgs;
+use crate::cli::{ValidateConfigArgs, ValidateConfigOutputFormat};
 use crate::config::{
-    load_catalog_configs, load_coverage_configs, load_doc_inventory_configs,
-    load_freshness_configs, load_impact_files, load_ownership_configs, load_routing_configs,
-    root_dir_from_option, validate_config_graph, validate_loaded_catalog_configs,
-    validate_loaded_coverage_configs, validate_loaded_doc_inventory_configs,
-    validate_loaded_freshness_configs, validate_loaded_ownership_configs,
-    validate_loaded_routing_configs, validate_loaded_rules, validate_ownership_path_conflicts,
+    ConfigValidationProblem, load_catalog_configs, load_coverage_configs,
+    load_doc_inventory_configs, load_freshness_configs, load_impact_files, load_ownership_configs,
+    load_routing_configs, root_dir_from_option, validate_config_graph,
+    validate_loaded_catalog_configs, validate_loaded_coverage_configs,
+    validate_loaded_doc_inventory_configs, validate_loaded_freshness_configs,
+    validate_loaded_ownership_configs, validate_loaded_routing_configs, validate_loaded_rules,
+    validate_ownership_path_conflicts,
 };
 use crate::git::get_tracked_paths;
 
+pub const VALIDATE_CONFIG_SCHEMA_VERSION: &str = "docpact.validate-config.v1";
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ValidateConfigReport {
+    pub schema_version: String,
+    pub tool_name: String,
+    pub tool_version: String,
+    pub command: String,
+    pub summary: ValidateConfigSummary,
+    pub warnings: Vec<ValidateConfigWarning>,
+    pub problems: Vec<ValidateConfigProblem>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ValidateConfigSummary {
+    pub status: String,
+    pub strict: bool,
+    pub rule_count: usize,
+    pub problem_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ValidateConfigWarning {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ValidateConfigProblem {
+    pub code: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    pub message: String,
+}
+
 pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
+    let format = args.format;
+    let report = execute(&args)?;
+    emit_report(&report, format);
+    if report.summary.status == "fail" {
+        Ok(AppExit::LintFailure)
+    } else {
+        Ok(AppExit::Success)
+    }
+}
+
+pub fn execute(args: &ValidateConfigArgs) -> Result<ValidateConfigReport> {
     let root_dir = root_dir_from_option(args.root.as_deref())?;
     let rules = load_impact_files(&root_dir, args.config.as_deref())?;
     let coverage_configs = load_coverage_configs(&root_dir, args.config.as_deref())?;
@@ -22,12 +71,14 @@ pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
     let catalog_configs = load_catalog_configs(&root_dir, args.config.as_deref())?;
     let ownership_configs = load_ownership_configs(&root_dir, args.config.as_deref())?;
 
+    let mut warnings = Vec::new();
     if !args.strict {
-        println!(
-            "Docpact config loaded successfully: {} rule(s).",
-            rules.len()
-        );
-        return Ok(AppExit::Success);
+        warnings.push(ValidateConfigWarning {
+            code: "strict-validation-skipped".into(),
+            message: "default mode only checks that effective config loads; use --strict for graph and ownership checks"
+                .into(),
+        });
+        return Ok(build_report(args.strict, rules.len(), warnings, Vec::new()));
     }
 
     let mut problems = validate_config_graph(&root_dir, args.config.as_deref())?;
@@ -59,30 +110,103 @@ pub fn run(args: ValidateConfigArgs) -> Result<AppExit> {
             &right.message,
         ))
     });
-    if problems.is_empty() {
-        println!(
-            "Docpact strict config validation passed: {} rule(s).",
-            rules.len()
-        );
-        return Ok(AppExit::Success);
-    }
+    Ok(build_report(args.strict, rules.len(), warnings, problems))
+}
 
-    println!("Docpact found invalid config definitions:");
-    for problem in problems {
-        match problem.rule_id {
-            Some(rule_id) => {
-                println!(
-                    "- [invalid-config] {} (rule `{}`): {}",
-                    problem.source, rule_id, problem.message
-                );
-            }
-            None => {
-                println!("- [invalid-config] {}: {}", problem.source, problem.message);
+fn build_report(
+    strict: bool,
+    rule_count: usize,
+    warnings: Vec<ValidateConfigWarning>,
+    problems: Vec<ConfigValidationProblem>,
+) -> ValidateConfigReport {
+    let problems = problems
+        .into_iter()
+        .map(problem_summary)
+        .collect::<Vec<_>>();
+    ValidateConfigReport {
+        schema_version: VALIDATE_CONFIG_SCHEMA_VERSION.into(),
+        tool_name: env!("CARGO_PKG_NAME").into(),
+        tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "validate-config".into(),
+        summary: ValidateConfigSummary {
+            status: if problems.is_empty() { "ok" } else { "fail" }.into(),
+            strict,
+            rule_count,
+            problem_count: problems.len(),
+        },
+        warnings,
+        problems,
+    }
+}
+
+fn problem_summary(problem: ConfigValidationProblem) -> ValidateConfigProblem {
+    ValidateConfigProblem {
+        code: "invalid-config".into(),
+        source: problem.source,
+        rule_id: problem.rule_id,
+        message: problem.message,
+    }
+}
+
+fn emit_report(report: &ValidateConfigReport, format: ValidateConfigOutputFormat) {
+    match format {
+        ValidateConfigOutputFormat::Text => print!("{}", render_text_report(report)),
+        ValidateConfigOutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(report).expect("validate-config report should serialize")
+        ),
+    }
+}
+
+fn render_text_report(report: &ValidateConfigReport) -> String {
+    let mut output = String::new();
+    if report.summary.status == "ok" {
+        if report.summary.strict {
+            output.push_str(&format!(
+                "Docpact validate-config: pass in strict mode ({} rule(s)).\n",
+                report.summary.rule_count
+            ));
+            output
+                .push_str("Next: run `docpact lint --root .` or `docpact route --paths <path>`.\n");
+        } else {
+            output.push_str(&format!(
+                "Docpact validate-config: config loads ({} rule(s)).\n",
+                report.summary.rule_count
+            ));
+            output.push_str(
+                "Next: run `docpact validate-config --strict` for graph and ownership checks.\n",
+            );
+        }
+    } else {
+        output.push_str(&format!(
+            "Docpact validate-config: failed with {} problem(s).\n",
+            report.summary.problem_count
+        ));
+        output.push_str("Problems:\n");
+        for problem in &report.problems {
+            match &problem.rule_id {
+                Some(rule_id) => output.push_str(&format!(
+                    "- [{}] {} (rule `{}`): {}\n",
+                    problem.code, problem.source, rule_id, problem.message
+                )),
+                None => output.push_str(&format!(
+                    "- [{}] {}: {}\n",
+                    problem.code, problem.source, problem.message
+                )),
             }
         }
+        output.push_str(
+            "Next: fix the config entries above, then rerun `docpact validate-config --strict`.\n",
+        );
     }
 
-    Ok(AppExit::LintFailure)
+    if !report.warnings.is_empty() {
+        output.push_str("Warnings:\n");
+        for warning in &report.warnings {
+            output.push_str(&format!("- {}: {}\n", warning.code, warning.message));
+        }
+    }
+    output
 }
 
 #[cfg(test)]
@@ -92,9 +216,9 @@ mod tests {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::run;
+    use super::{VALIDATE_CONFIG_SCHEMA_VERSION, execute, render_text_report, run};
     use crate::AppExit;
-    use crate::cli::ValidateConfigArgs;
+    use crate::cli::{ValidateConfigArgs, ValidateConfigOutputFormat};
     use crate::config::{CONFIG_FILE, DOC_ROOT_DIR};
 
     fn temp_dir(prefix: &str) -> PathBuf {
@@ -171,6 +295,7 @@ rules:
             root: Some(root),
             config: None,
             strict: true,
+            format: ValidateConfigOutputFormat::Text,
         })
         .expect("strict validation should execute");
 
@@ -210,6 +335,7 @@ rules:
             root: Some(root),
             config: None,
             strict: false,
+            format: ValidateConfigOutputFormat::Text,
         })
         .expect("non-strict validation should execute");
 
@@ -259,9 +385,52 @@ rules: []
             root: Some(root),
             config: None,
             strict: true,
+            format: ValidateConfigOutputFormat::Text,
         })
         .expect("strict validation should execute");
 
         assert_eq!(exit, AppExit::LintFailure);
+    }
+
+    #[test]
+    fn strict_validate_config_returns_json_ready_report() {
+        let root = temp_dir("docpact-validate-config-json");
+        fs::create_dir_all(root.join(DOC_ROOT_DIR)).expect("doc root should exist");
+
+        fs::write(
+            root.join(CONFIG_FILE),
+            r#"
+version: 1
+layout: repo
+rules:
+  - id: invalid
+    scope: repo
+    repo: demo
+    triggers:
+      - path: src/***
+        kind: code
+    requiredDocs:
+      - path: docs/*.md
+        mode: invalid_mode
+    reason: example
+"#,
+        )
+        .expect("config should be written");
+
+        let report = execute(&ValidateConfigArgs {
+            root: Some(root),
+            config: None,
+            strict: true,
+            format: ValidateConfigOutputFormat::Json,
+        })
+        .expect("validation should execute");
+        let rendered = render_text_report(&report);
+
+        assert_eq!(report.schema_version, VALIDATE_CONFIG_SCHEMA_VERSION);
+        assert_eq!(report.command, "validate-config");
+        assert_eq!(report.summary.status, "fail");
+        assert_eq!(report.problems[0].code, "invalid-config");
+        assert!(rendered.contains("Docpact validate-config: failed"));
+        assert!(rendered.contains("Next: fix the config entries above"));
     }
 }

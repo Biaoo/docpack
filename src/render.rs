@@ -4,15 +4,18 @@ use miette::{Result, bail};
 use serde::Serialize;
 
 use crate::AppExit;
-use crate::cli::{RenderArgs, RenderOutputFormat, RenderView, RouteArgs, RouteDetail, RouteOutputFormat};
+use crate::cli::{
+    RenderArgs, RenderOutputFormat, RenderView, RouteArgs, RouteDetail, RouteOutputFormat,
+};
 use crate::config::{
-    analyze_ownership_paths, load_catalog_configs, load_ownership_configs, resolve_rule_path,
-    root_dir_from_option,
+    analyze_ownership_paths, load_catalog_configs, load_ownership_configs, load_routing_configs,
+    resolve_rule_path, root_dir_from_option,
 };
 use crate::git::get_tracked_paths;
 use crate::route;
+use crate::rules::matches_pattern;
 
-pub const RENDER_SCHEMA_VERSION: &str = "docpact.render.v1";
+pub const RENDER_SCHEMA_VERSION: &str = "docpact.render.v2";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(tag = "view", rename_all = "kebab-case")]
@@ -20,6 +23,7 @@ pub enum RenderReport {
     CatalogSummary(CatalogSummaryReport),
     OwnershipSummary(OwnershipSummaryReport),
     NavigationSummary(NavigationSummaryReport),
+    RoutingSummary(RoutingSummaryReport),
     WorkspaceSummary(WorkspaceSummaryReport),
 }
 
@@ -28,6 +32,7 @@ pub struct CatalogSummaryReport {
     pub schema_version: String,
     pub tool_name: String,
     pub tool_version: String,
+    pub command: String,
     pub summary: CatalogSummary,
     pub repos: Vec<CatalogRepoSummary>,
 }
@@ -65,6 +70,7 @@ pub struct OwnershipSummaryReport {
     pub schema_version: String,
     pub tool_name: String,
     pub tool_version: String,
+    pub command: String,
     pub summary: OwnershipSummary,
     pub domains: Vec<OwnershipDomainSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -118,7 +124,10 @@ pub struct NavigationSummaryReport {
     pub schema_version: String,
     pub tool_name: String,
     pub tool_version: String,
+    pub command: String,
     pub summary: NavigationSummary,
+    #[serde(default)]
+    pub warnings: Vec<route::RouteWarning>,
     pub governed_docs: Vec<NavigationGovernedDoc>,
     pub advisory_docs: Vec<NavigationAdvisoryDoc>,
 }
@@ -157,10 +166,48 @@ pub struct NavigationAdvisoryDoc {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RoutingSummaryReport {
+    pub schema_version: String,
+    pub tool_name: String,
+    pub tool_version: String,
+    pub command: String,
+    pub summary: RoutingSummary,
+    pub intents: Vec<RoutingIntentSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RoutingSummary {
+    pub config_count: usize,
+    pub intent_count: usize,
+    pub duplicate_alias_count: usize,
+    pub tracked_path_count: usize,
+    pub analysis_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct RoutingIntentSummary {
+    pub alias: String,
+    pub source: String,
+    pub base_dir: String,
+    pub resolution: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub override_mode: Option<String>,
+    pub configured_paths: Vec<String>,
+    pub resolved_patterns: Vec<String>,
+    pub matched_tracked_path_count: usize,
+    pub duplicate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct WorkspaceSummaryReport {
     pub schema_version: String,
     pub tool_name: String,
     pub tool_version: String,
+    pub command: String,
     pub summary: WorkspaceSummary,
     pub repos: Vec<WorkspaceRepoSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,6 +256,10 @@ pub fn execute(args: &RenderArgs) -> Result<RenderReport> {
             execute_ownership_summary(args)
         }
         RenderView::NavigationSummary => execute_navigation_summary(args),
+        RenderView::RoutingSummary => {
+            reject_navigation_inputs(args)?;
+            execute_routing_summary(args)
+        }
         RenderView::WorkspaceSummary => {
             reject_navigation_inputs(args)?;
             execute_workspace_summary(args)
@@ -235,12 +286,14 @@ fn execute_catalog_summary(args: &RenderArgs) -> Result<RenderReport> {
                 id: repo.id.clone(),
                 path: repo.path.clone(),
                 canonical_repo: repo.canonical_repo.clone(),
-                entry_doc: repo.entry_doc.as_ref().map(|path| {
-                    resolve_catalog_doc_pointer(&catalog.base_dir, &repo.path, path)
-                }),
-                branch_policy_doc: repo.branch_policy_doc.as_ref().map(|path| {
-                    resolve_catalog_doc_pointer(&catalog.base_dir, &repo.path, path)
-                }),
+                entry_doc: repo
+                    .entry_doc
+                    .as_ref()
+                    .map(|path| resolve_catalog_doc_pointer(&catalog.base_dir, &repo.path, path)),
+                branch_policy_doc: repo
+                    .branch_policy_doc
+                    .as_ref()
+                    .map(|path| resolve_catalog_doc_pointer(&catalog.base_dir, &repo.path, path)),
                 workflow_docs: repo
                     .workflow_docs
                     .iter()
@@ -276,6 +329,7 @@ fn execute_catalog_summary(args: &RenderArgs) -> Result<RenderReport> {
         schema_version: RENDER_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "render".into(),
         summary,
         repos,
     }))
@@ -288,7 +342,13 @@ fn execute_ownership_summary(args: &RenderArgs) -> Result<RenderReport> {
     let tracked_paths = get_tracked_paths(&root_dir);
     let owner_repo_count = ownership_configs
         .iter()
-        .flat_map(|config| config.ownership.domains.iter().map(|domain| domain.owner_repo.clone()))
+        .flat_map(|config| {
+            config
+                .ownership
+                .domains
+                .iter()
+                .map(|domain| domain.owner_repo.clone())
+        })
         .collect::<BTreeSet<_>>()
         .len();
 
@@ -320,49 +380,55 @@ fn execute_ownership_summary(args: &RenderArgs) -> Result<RenderReport> {
         })
         .collect::<Vec<_>>();
 
-    let (tracked_path_count, analyzed_path_count, overlaps, conflicts, analysis_warning, analysis_available) =
-        match tracked_paths {
-            Ok(paths) => {
-                let analysis = analyze_ownership_paths(&paths, &ownership_configs);
-                let overlaps = analysis
-                    .overlaps
-                    .into_iter()
-                    .map(|item| OwnershipOverlapSummary {
-                        path: item.path,
-                        owner_repo: item.owner_repo,
-                        domain_ids: item.domain_ids,
-                        selected_domain_id: item.selected_domain_id,
-                    })
-                    .collect::<Vec<_>>();
-                let conflicts = analysis
-                    .conflicts
-                    .into_iter()
-                    .map(|item| OwnershipConflictSummary {
-                        path: item.path,
-                        owner_repos: item.owner_repos,
-                        domain_ids: item.domain_ids,
-                    })
-                    .collect::<Vec<_>>();
-                (
-                    paths.len(),
-                    analysis.paths.len(),
-                    overlaps,
-                    conflicts,
-                    None,
-                    true,
-                )
-            }
-            Err(error) => (
-                0,
-                0,
-                Vec::new(),
-                Vec::new(),
-                Some(format!(
-                    "Ownership analysis could not read tracked files from git: {error}"
-                )),
-                false,
-            ),
-        };
+    let (
+        tracked_path_count,
+        analyzed_path_count,
+        overlaps,
+        conflicts,
+        analysis_warning,
+        analysis_available,
+    ) = match tracked_paths {
+        Ok(paths) => {
+            let analysis = analyze_ownership_paths(&paths, &ownership_configs);
+            let overlaps = analysis
+                .overlaps
+                .into_iter()
+                .map(|item| OwnershipOverlapSummary {
+                    path: item.path,
+                    owner_repo: item.owner_repo,
+                    domain_ids: item.domain_ids,
+                    selected_domain_id: item.selected_domain_id,
+                })
+                .collect::<Vec<_>>();
+            let conflicts = analysis
+                .conflicts
+                .into_iter()
+                .map(|item| OwnershipConflictSummary {
+                    path: item.path,
+                    owner_repos: item.owner_repos,
+                    domain_ids: item.domain_ids,
+                })
+                .collect::<Vec<_>>();
+            (
+                paths.len(),
+                analysis.paths.len(),
+                overlaps,
+                conflicts,
+                None,
+                true,
+            )
+        }
+        Err(error) => (
+            0,
+            0,
+            Vec::new(),
+            Vec::new(),
+            Some(format!(
+                "Ownership analysis could not read tracked files from git: {error}"
+            )),
+            false,
+        ),
+    };
 
     let _ = catalog_configs; // keep symmetry with ownership strict reference model
 
@@ -370,6 +436,7 @@ fn execute_ownership_summary(args: &RenderArgs) -> Result<RenderReport> {
         schema_version: RENDER_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "render".into(),
         summary: OwnershipSummary {
             domain_count: domains.len(),
             owner_repo_count,
@@ -402,6 +469,7 @@ fn execute_navigation_summary(args: &RenderArgs) -> Result<RenderReport> {
         schema_version: RENDER_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "render".into(),
         summary: NavigationSummary {
             input_path_count: report.summary.input_path_count,
             module_input_count: report.summary.module_input_count,
@@ -412,6 +480,7 @@ fn execute_navigation_summary(args: &RenderArgs) -> Result<RenderReport> {
             freshness_warning_count: report.summary.freshness_warning_count,
             critical_freshness_count: report.summary.critical_freshness_count,
         },
+        warnings: report.warnings,
         governed_docs: report
             .governed_docs
             .into_iter()
@@ -443,6 +512,93 @@ fn execute_navigation_summary(args: &RenderArgs) -> Result<RenderReport> {
     }))
 }
 
+fn execute_routing_summary(args: &RenderArgs) -> Result<RenderReport> {
+    let root_dir = root_dir_from_option(args.root.as_deref())?;
+    let routing_configs = load_routing_configs(&root_dir, args.config.as_deref())?;
+    let tracked_paths = get_tracked_paths(&root_dir);
+    let alias_counts = routing_configs
+        .iter()
+        .flat_map(|config| config.routing.intents.keys().cloned())
+        .fold(
+            std::collections::BTreeMap::<String, usize>::new(),
+            |mut counts, alias| {
+                *counts.entry(alias).or_default() += 1;
+                counts
+            },
+        );
+
+    let (tracked_path_count, analysis_warning, analysis_available, tracked_paths) =
+        match tracked_paths {
+            Ok(paths) => (paths.len(), None, true, paths),
+            Err(error) => (
+                0,
+                Some(format!(
+                    "Routing summary could not read tracked files from git: {error}"
+                )),
+                false,
+                Vec::new(),
+            ),
+        };
+
+    let intents = routing_configs
+        .iter()
+        .flat_map(|config| {
+            config.routing.intents.iter().map(|(alias, intent)| {
+                let resolved_patterns = intent
+                    .paths
+                    .iter()
+                    .map(|pattern| resolve_rule_path(&config.base_dir, pattern))
+                    .collect::<Vec<_>>();
+                let matched_tracked_path_count = if analysis_available {
+                    tracked_paths
+                        .iter()
+                        .filter(|tracked| {
+                            resolved_patterns
+                                .iter()
+                                .any(|pattern| matches_pattern(tracked, pattern))
+                        })
+                        .count()
+                } else {
+                    0
+                };
+
+                RoutingIntentSummary {
+                    alias: alias.clone(),
+                    source: config.source.clone(),
+                    base_dir: if config.base_dir.is_empty() {
+                        ".".into()
+                    } else {
+                        config.base_dir.clone()
+                    },
+                    resolution: config.resolution.origin_kind.as_str().into(),
+                    workspace_profile: config.resolution.workspace_profile.clone(),
+                    override_mode: config.resolution.mode.clone(),
+                    configured_paths: intent.paths.clone(),
+                    resolved_patterns,
+                    matched_tracked_path_count,
+                    duplicate: alias_counts.get(alias).copied().unwrap_or_default() > 1,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(RenderReport::RoutingSummary(RoutingSummaryReport {
+        schema_version: RENDER_SCHEMA_VERSION.into(),
+        tool_name: env!("CARGO_PKG_NAME").into(),
+        tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "render".into(),
+        summary: RoutingSummary {
+            config_count: routing_configs.len(),
+            intent_count: intents.len(),
+            duplicate_alias_count: alias_counts.values().filter(|count| **count > 1).count(),
+            tracked_path_count,
+            analysis_available,
+        },
+        intents,
+        analysis_warning,
+    }))
+}
+
 fn execute_workspace_summary(args: &RenderArgs) -> Result<RenderReport> {
     let root_dir = root_dir_from_option(args.root.as_deref())?;
     let catalog_configs = load_catalog_configs(&root_dir, args.config.as_deref())?;
@@ -452,16 +608,20 @@ fn execute_workspace_summary(args: &RenderArgs) -> Result<RenderReport> {
     let repos = catalog_configs
         .iter()
         .flat_map(|catalog| {
-            catalog.catalog.repos.iter().map(|repo| WorkspaceRepoSummary {
-                id: repo.id.clone(),
-                path: repo.path.clone(),
-                canonical_repo: repo.canonical_repo.clone(),
-                entry_doc_present: repo.entry_doc.is_some(),
-                branch_policy_doc_present: repo.branch_policy_doc.is_some(),
-                workflow_doc_count: repo.workflow_docs.len(),
-                integration_doc_count: repo.integration_docs.len(),
-                workspace_integration_required: repo.workspace_integration_required,
-            })
+            catalog
+                .catalog
+                .repos
+                .iter()
+                .map(|repo| WorkspaceRepoSummary {
+                    id: repo.id.clone(),
+                    path: repo.path.clone(),
+                    canonical_repo: repo.canonical_repo.clone(),
+                    entry_doc_present: repo.entry_doc.is_some(),
+                    branch_policy_doc_present: repo.branch_policy_doc.is_some(),
+                    workflow_doc_count: repo.workflow_docs.len(),
+                    integration_doc_count: repo.integration_docs.len(),
+                    workspace_integration_required: repo.workspace_integration_required,
+                })
         })
         .collect::<Vec<_>>();
 
@@ -503,6 +663,7 @@ fn execute_workspace_summary(args: &RenderArgs) -> Result<RenderReport> {
         schema_version: RENDER_SCHEMA_VERSION.into(),
         tool_name: env!("CARGO_PKG_NAME").into(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
+        command: "render".into(),
         summary: WorkspaceSummary {
             catalog_repo_count: repos.len(),
             ownership_domain_count: ownership_configs
@@ -553,6 +714,7 @@ fn render_text_report(report: &RenderReport, limit: Option<usize>) -> String {
         RenderReport::CatalogSummary(report) => render_catalog_summary_text(report, limit),
         RenderReport::OwnershipSummary(report) => render_ownership_summary_text(report, limit),
         RenderReport::NavigationSummary(report) => render_navigation_summary_text(report, limit),
+        RenderReport::RoutingSummary(report) => render_routing_summary_text(report, limit),
         RenderReport::WorkspaceSummary(report) => render_workspace_summary_text(report, limit),
     }
 }
@@ -661,7 +823,10 @@ fn render_ownership_summary_text(report: &OwnershipSummaryReport, limit: Option<
     output
 }
 
-fn render_navigation_summary_text(report: &NavigationSummaryReport, limit: Option<usize>) -> String {
+fn render_navigation_summary_text(
+    report: &NavigationSummaryReport,
+    limit: Option<usize>,
+) -> String {
     let mut output = String::new();
     output.push_str("Docpact render navigation-summary:\n");
     output.push_str(&format!(
@@ -675,6 +840,15 @@ fn render_navigation_summary_text(report: &NavigationSummaryReport, limit: Optio
         report.summary.freshness_warning_count,
         report.summary.critical_freshness_count,
     ));
+    if !report.warnings.is_empty() {
+        output.push_str("Warnings:\n");
+        for warning in &report.warnings {
+            output.push_str(&format!(
+                "- {} for {}: {}\n",
+                warning.code, warning.input, warning.message
+            ));
+        }
+    }
     render_limited_section(
         &mut output,
         "Governed docs",
@@ -707,6 +881,50 @@ fn render_navigation_summary_text(report: &NavigationSummaryReport, limit: Optio
             )
         }),
     );
+    output
+}
+
+fn render_routing_summary_text(report: &RoutingSummaryReport, limit: Option<usize>) -> String {
+    let mut output = String::new();
+    output.push_str("Docpact render routing-summary:\n");
+    output.push_str(&format!(
+        "Summary: configs={} intents={} duplicate_aliases={} tracked_paths={} analysis_available={}\n",
+        report.summary.config_count,
+        report.summary.intent_count,
+        report.summary.duplicate_alias_count,
+        report.summary.tracked_path_count,
+        report.summary.analysis_available,
+    ));
+    if let Some(warning) = &report.analysis_warning {
+        output.push_str(&format!("Analysis warning: {warning}\n"));
+    }
+    render_limited_section(
+        &mut output,
+        "Routing intents",
+        report.intents.len(),
+        limit,
+        report.intents.iter().map(|intent| {
+            format!(
+                "- alias={} source={} base_dir={} resolution={} profile={} mode={} paths={} matched_tracked_paths={} duplicate={}\n",
+                intent.alias,
+                intent.source,
+                intent.base_dir,
+                intent.resolution,
+                intent.workspace_profile.as_deref().unwrap_or("-"),
+                intent.override_mode.as_deref().unwrap_or("-"),
+                join_or_dash(&intent.resolved_patterns),
+                intent.matched_tracked_path_count,
+                intent.duplicate,
+            )
+        }),
+    );
+    if report.intents.is_empty() {
+        output.push_str("Next: define aliases under `routing.intents`, or use `docpact route --paths <csv>` / `--module <prefix>`.\n");
+    } else {
+        output.push_str(
+            "Next: use `docpact route --intent <alias>` with one of the aliases above.\n",
+        );
+    }
     output
 }
 
@@ -749,8 +967,13 @@ fn render_workspace_summary_text(report: &WorkspaceSummaryReport, limit: Option<
     output
 }
 
-fn render_limited_section<I>(output: &mut String, title: &str, total: usize, limit: Option<usize>, lines: I)
-where
+fn render_limited_section<I>(
+    output: &mut String,
+    title: &str,
+    total: usize,
+    limit: Option<usize>,
+    lines: I,
+) where
     I: IntoIterator<Item = String>,
 {
     let displayed = limit.map(|value| value.min(total)).unwrap_or(total);
@@ -808,7 +1031,11 @@ mod tests {
             .current_dir(root)
             .status()
             .expect("git should run");
-        assert!(status.success(), "git command failed: git {}", args.join(" "));
+        assert!(
+            status.success(),
+            "git command failed: git {}",
+            args.join(" ")
+        );
     }
 
     fn init_git_repo(root: &Path) {
@@ -872,7 +1099,10 @@ rules: []
         assert_eq!(report.summary.workflow_doc_count, 1);
         assert_eq!(report.summary.integration_doc_count, 1);
         assert_eq!(report.summary.workspace_integration_required_count, 1);
-        assert_eq!(report.repos[0].canonical_repo.as_deref(), Some("Biaoo/docpack"));
+        assert_eq!(
+            report.repos[0].canonical_repo.as_deref(),
+            Some("Biaoo/docpack")
+        );
         assert_eq!(report.repos[0].entry_doc.as_deref(), Some("AGENTS.md"));
     }
 
@@ -907,10 +1137,15 @@ rules: []
 "#,
         )
         .expect("config");
-        fs::write(root.join("src/payments/charge.ts"), "export const charge = 1;\n").expect("src");
+        fs::write(
+            root.join("src/payments/charge.ts"),
+            "export const charge = 1;\n",
+        )
+        .expect("src");
         git(&root, &["add", "."]);
 
-        let report = execute(&base_args(&root, RenderView::OwnershipSummary)).expect("render report");
+        let report =
+            execute(&base_args(&root, RenderView::OwnershipSummary)).expect("render report");
         let RenderReport::OwnershipSummary(report) = report else {
             panic!("expected ownership summary");
         };
@@ -972,6 +1207,91 @@ rules:
     }
 
     #[test]
+    fn render_navigation_summary_preserves_route_warnings() {
+        let root = temp_dir("docpact-render-navigation-warnings");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            "version: 1\nlayout: repo\nrepo:\n  id: demo\nrules: []\n",
+        )
+        .expect("config");
+        git(&root, &["add", "."]);
+
+        let mut args = base_args(&root, RenderView::NavigationSummary);
+        args.module = vec!["src/missing".into()];
+        let report = execute(&args).expect("render report");
+        let RenderReport::NavigationSummary(report) = report else {
+            panic!("expected navigation summary");
+        };
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(report.warnings[0].code, "no-tracked-path-matches");
+
+        let rendered = render_text_report(&RenderReport::NavigationSummary(report), None);
+        assert!(rendered.contains("Warnings:"));
+        assert!(rendered.contains("no-tracked-path-matches for"));
+    }
+
+    #[test]
+    fn render_routing_summary_lists_effective_intents() {
+        let root = temp_dir("docpact-render-routing");
+        init_git_repo(&root);
+        fs::create_dir_all(root.join(".docpact")).expect("doc dir");
+        fs::create_dir_all(root.join("src/api")).expect("api dir");
+        fs::create_dir_all(root.join("src/commands")).expect("commands dir");
+
+        fs::write(
+            root.join(".docpact/config.yaml"),
+            r#"
+version: 1
+layout: repo
+routing:
+  intents:
+    api:
+      paths:
+        - src/api/**
+        - src/commands/**
+repo:
+  id: demo
+rules: []
+"#,
+        )
+        .expect("config");
+        fs::write(root.join("src/api/client.ts"), "export const client = 1;\n").expect("src");
+        fs::write(
+            root.join("src/commands/sync.ts"),
+            "export const sync = 1;\n",
+        )
+        .expect("src");
+        git(&root, &["add", "."]);
+
+        let report = execute(&base_args(&root, RenderView::RoutingSummary)).expect("render report");
+        let RenderReport::RoutingSummary(report) = report else {
+            panic!("expected routing summary");
+        };
+        assert_eq!(report.schema_version, RENDER_SCHEMA_VERSION);
+        assert_eq!(report.summary.config_count, 1);
+        assert_eq!(report.summary.intent_count, 1);
+        assert_eq!(report.summary.duplicate_alias_count, 0);
+        assert_eq!(report.summary.tracked_path_count, 3);
+        assert!(report.summary.analysis_available);
+        assert_eq!(report.intents[0].alias, "api");
+        assert_eq!(report.intents[0].source, ".docpact/config.yaml");
+        assert_eq!(report.intents[0].resolution, "local");
+        assert_eq!(
+            report.intents[0].resolved_patterns,
+            vec!["src/api/**".to_string(), "src/commands/**".to_string()]
+        );
+        assert_eq!(report.intents[0].matched_tracked_path_count, 2);
+        assert!(!report.intents[0].duplicate);
+
+        let rendered = render_text_report(&RenderReport::RoutingSummary(report), None);
+        assert!(rendered.contains("Docpact render routing-summary:"));
+        assert!(rendered.contains("alias=api"));
+        assert!(rendered.contains("Next: use `docpact route --intent <alias>`"));
+    }
+
+    #[test]
     fn render_workspace_summary_reports_repo_and_analysis_counts() {
         let root = temp_dir("docpact-render-workspace");
         init_git_repo(&root);
@@ -1015,7 +1335,8 @@ rules: []
         fs::write(root.join("repo-b/src/b.ts"), "export const b = 1;\n").expect("src");
         git(&root, &["add", "."]);
 
-        let report = execute(&base_args(&root, RenderView::WorkspaceSummary)).expect("render report");
+        let report =
+            execute(&base_args(&root, RenderView::WorkspaceSummary)).expect("render report");
         let RenderReport::WorkspaceSummary(report) = report else {
             panic!("expected workspace summary");
         };
@@ -1038,7 +1359,8 @@ rules: []
         .expect("config");
         git(&root, &["add", "."]);
 
-        let error = execute(&base_args(&root, RenderView::NavigationSummary)).expect_err("should fail");
+        let error =
+            execute(&base_args(&root, RenderView::NavigationSummary)).expect_err("should fail");
         assert!(
             error
                 .to_string()
@@ -1066,6 +1388,7 @@ rules: []
             schema_version: RENDER_SCHEMA_VERSION.into(),
             tool_name: env!("CARGO_PKG_NAME").into(),
             tool_version: env!("CARGO_PKG_VERSION").into(),
+            command: "render".into(),
             summary: CatalogSummary {
                 repo_count: 2,
                 entry_doc_count: 1,

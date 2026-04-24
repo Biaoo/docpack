@@ -9,6 +9,7 @@ pub const SUPPORTED_REPORTERS: &[&str] = &["text", "json", "sarif", "github"];
 pub const SARIF_SCHEMA_URI: &str =
     "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json";
 pub const DIAGNOSTICS_SCHEMA_VERSION: &str = "docpact.diagnostics.v1";
+pub const LINT_REPORT_SCHEMA_VERSION: &str = "docpact.lint-report.v1";
 
 const METADATA_RULE_ID: &str = "metadata-review-fields";
 const UNCOVERED_CHANGE_RULE_ID: &str = "coverage-uncovered-change";
@@ -87,6 +88,10 @@ pub struct ArtifactSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Report {
+    pub schema_version: String,
+    pub tool_name: String,
+    pub tool_version: String,
+    pub command: String,
     pub status: String,
     pub changed_paths: Vec<String>,
     pub matched_rule_count: usize,
@@ -107,6 +112,7 @@ pub struct Report {
     pub stale_docs: Vec<FreshnessItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expired_waivers: Vec<ExpiredWaiver>,
+    pub warnings: Vec<OutputWarning>,
     pub detail: String,
     pub summary: ReportSummary,
     pub items: Vec<DiagnosticItem>,
@@ -117,6 +123,12 @@ pub struct Report {
     pub has_next_page: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_page: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutputWarning {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -467,36 +479,40 @@ pub fn emit_lint_output(
 pub fn emit_diagnostic_show(record: &DiagnosticRecord, format: DiagnosticsOutputFormat) {
     match format {
         DiagnosticsOutputFormat::Text => {
-            println!("Diagnostic {}", record.diagnostic_id);
-            println!("type={}", record.problem_type);
-            println!("path={}", record.path);
-            println!("rule_id={}", record.rule_id);
             println!(
-                "required_mode={}",
-                record.required_mode.as_deref().unwrap_or("n/a")
+                "Docpact diagnostic {}: {} on {}.",
+                record.diagnostic_id, record.problem_type, record.path
             );
-            println!("failure_reason={}", record.failure_reason);
-            println!("suggested_action={}", record.suggested_action);
-            println!("finding_state={}", record.finding_state);
+            println!("Action: {}", record.suggested_action);
+            println!("Reason: {}", record.failure_reason);
+            println!("Rule: {}", record.rule_id);
+            if let Some(required_mode) = &record.required_mode {
+                println!("Required mode: {required_mode}");
+            }
+            println!("Finding state: {}", record.finding_state);
             if let Some(reason) = &record.waiver_reason {
-                println!("waiver_reason={reason}");
+                println!("Waiver reason: {reason}");
             }
             if let Some(owner) = &record.waiver_owner {
-                println!("waiver_owner={owner}");
+                println!("Waiver owner: {owner}");
             }
             if let Some(expires_at) = &record.waiver_expires_at {
-                println!("waiver_expires_at={expires_at}");
+                println!("Waiver expires: {expires_at}");
             }
             if let Some(rule_source) = &record.rule_source {
-                println!("rule_source={rule_source}");
+                println!("Rule source: {rule_source}");
             }
             if !record.trigger_paths.is_empty() {
-                println!("trigger_paths={}", record.trigger_paths.join(","));
+                println!("Trigger paths: {}", record.trigger_paths.join(","));
             }
             if let Some(rule_reason) = &record.rule_reason {
-                println!("rule_reason={rule_reason}");
+                println!("Rule reason: {rule_reason}");
             }
-            println!("message={}", record.message);
+            println!("Message: {}", record.message);
+            println!(
+                "Next: apply the action above, or waive with `docpact waiver add --report <artifact> --id {}` if this is an accepted temporary exception.",
+                record.diagnostic_id
+            );
         }
         DiagnosticsOutputFormat::Json => {
             println!(
@@ -653,6 +669,10 @@ pub fn build_report_from_artifact(
     let paged = build_paginated_diagnostics(&artifact.diagnostics, detail, page, page_size);
 
     Report {
+        schema_version: LINT_REPORT_SCHEMA_VERSION.into(),
+        tool_name: artifact.tool_name.clone(),
+        tool_version: artifact.tool_version.clone(),
+        command: "lint".into(),
         status: artifact.status.clone(),
         changed_paths: artifact.changed_paths.clone(),
         matched_rule_count: artifact.matched_rule_count,
@@ -666,6 +686,7 @@ pub fn build_report_from_artifact(
         waiver_summary: artifact.waiver_summary.clone(),
         stale_docs: artifact.stale_docs.clone(),
         expired_waivers: artifact.expired_waivers.clone(),
+        warnings: lint_report_warnings(artifact, &paged),
         detail: detail.as_str().into(),
         summary: paged.summary.clone(),
         items: paged.items,
@@ -676,6 +697,41 @@ pub fn build_report_from_artifact(
         has_next_page: paged.has_next_page,
         next_page: paged.next_page,
     }
+}
+
+fn lint_report_warnings(
+    artifact: &DiagnosticsArtifact,
+    paged: &PaginatedDiagnostics,
+) -> Vec<OutputWarning> {
+    let mut warnings = Vec::new();
+    if paged.total_pages > 1 {
+        warnings.push(OutputWarning {
+            code: "paged-report".into(),
+            message: format!(
+                "stdout contains page {} of {}; use --diagnostics-page or read the full diagnostics artifact for all findings",
+                paged.page, paged.total_pages
+            ),
+        });
+    }
+    if artifact.coverage_status == "fail" {
+        warnings.push(OutputWarning {
+            code: "coverage-failed".into(),
+            message: "changed paths include files not covered by docpact rule triggers".into(),
+        });
+    }
+    if artifact.freshness_summary.critical_count > 0 {
+        warnings.push(OutputWarning {
+            code: "critical-stale-docs".into(),
+            message: "one or more governed documents are critically stale".into(),
+        });
+    }
+    if artifact.waiver_summary.expired_count > 0 {
+        warnings.push(OutputWarning {
+            code: "expired-waivers".into(),
+            message: "one or more waivers are expired and no longer suppress diagnostics".into(),
+        });
+    }
+    warnings
 }
 
 pub fn build_sarif_log(
@@ -820,47 +876,67 @@ fn build_paginated_diagnostics(
 
 fn emit_text_report(report: &Report, mode: LintMode) {
     if report.total_count == 0 {
-        println!("Docpact: no problems found.");
+        println!("Docpact lint: pass.");
+        println!(
+            "Summary: changed_paths={}, matched_rules={}, coverage={}, freshness={}",
+            report.changed_paths.len(),
+            report.matched_rule_count,
+            report.coverage_status,
+            report.freshness_status
+        );
+        println!("Next: no action required.");
         return;
     }
 
-    let heading = if report.baseline_summary.active_count == 0
+    let status_label = if report.baseline_summary.active_count == 0
         && (report.baseline_summary.suppressed_count > 0 || report.waiver_summary.waived_count > 0)
     {
-        "Docpact found waived and/or baseline-suppressed findings:"
+        "pass with suppressed findings"
     } else if report.baseline_summary.suppressed_count > 0 || report.waiver_summary.waived_count > 0
     {
-        "Docpact found active, waived, and/or baseline-suppressed findings:"
+        "attention required with suppressed findings"
     } else {
         match mode {
-            LintMode::Enforce => "Docpact found blocking problems:",
-            LintMode::Warn => "Docpact found warnings:",
+            LintMode::Enforce => "blocking problems found",
+            LintMode::Warn => "warnings found",
         }
     };
 
-    println!("{heading}");
+    println!("Docpact lint: {status_label}.");
     println!(
-        "Summary: total={}, active={}, suppressed_by_baseline={}, waived={}, expired_waivers={}, counts_by_type={}, top_rules={}, coverage_status={}, uncovered={}, freshness_status={}, stale_docs={}, critical_stale_docs={}, invalid_review_references={}, baseline_status={}, waiver_status={}, page={}/{}, page_size={}",
+        "Summary: total={}, active={}, suppressed_by_baseline={}, waived={}, coverage={}, uncovered={}, freshness={}, stale_docs={}, critical_stale_docs={}, invalid_review_references={}, page={}/{}",
         report.total_count,
         report.baseline_summary.active_count,
         report.baseline_summary.suppressed_count,
         report.waiver_summary.waived_count,
-        report.waiver_summary.expired_count,
-        format_counts_by_type(&report.summary.counts_by_type),
-        format_top_rules(&report.summary.top_rules),
         report.coverage_status,
         report.uncovered_changed_paths.len(),
         report.freshness_status,
         report.freshness_summary.stale_doc_count,
         report.freshness_summary.critical_count,
         report.freshness_summary.invalid_review_reference_count,
-        report.baseline_status,
-        report.waiver_status,
         report.page,
         report.total_pages,
-        report.page_size,
     );
 
+    if !report.summary.counts_by_type.is_empty() {
+        println!(
+            "Problem types: {}",
+            format_counts_by_type(&report.summary.counts_by_type)
+        );
+    }
+    if !report.summary.top_rules.is_empty() {
+        println!("Top rules: {}", format_top_rules(&report.summary.top_rules));
+    }
+    if report.waiver_summary.expired_count > 0 {
+        println!("Expired waivers: {}", report.waiver_summary.expired_count);
+    }
+    if !report.warnings.is_empty() {
+        println!("Warnings:");
+        for warning in &report.warnings {
+            println!("- {}: {}", warning.code, warning.message);
+        }
+    }
     if let Some(next_page) = report.next_page {
         println!("Next page: --diagnostics-page {next_page}");
     }
@@ -871,6 +947,13 @@ fn emit_text_report(report: &Report, mode: LintMode) {
 
     for item in &report.items {
         println!("{}", format_item(item));
+    }
+
+    if let Some(first) = report.items.first() {
+        println!(
+            "Next: run `docpact diagnostics show --report <artifact> --id {}` for full context, then apply the suggested action.",
+            first.diagnostic_id
+        );
     }
 
     if !report.expired_waivers.is_empty() {
@@ -1023,38 +1106,41 @@ fn format_top_rules(top_rules: &[RuleCount]) -> String {
 }
 
 fn format_item(item: &DiagnosticItem) -> String {
-    let mut parts = vec![
-        format!("- [{}]", item.diagnostic_id),
-        format!("type={}", item.problem_type),
-        format!("path={}", item.path),
-        format!("rule={}", item.rule_id),
-        format!("mode={}", item.required_mode.as_deref().unwrap_or("n/a")),
-        format!("reason={}", item.failure_reason),
-        format!("action={}", item.suggested_action),
-        format!("finding_state={}", item.finding_state),
-    ];
+    let mut parts = vec![format!(
+        "- [{}] {}: {} via rule {}",
+        item.diagnostic_id, item.problem_type, item.path, item.rule_id
+    )];
+
+    parts.push(format!("action: {}", item.suggested_action));
+    parts.push(format!("reason: {}", item.failure_reason));
+    if let Some(mode) = &item.required_mode {
+        parts.push(format!("mode: {mode}"));
+    }
+    if item.finding_state != "active" {
+        parts.push(format!("state: {}", item.finding_state));
+    }
 
     if let Some(waiver_reason) = &item.waiver_reason {
-        parts.push(format!("waiver_reason={waiver_reason}"));
+        parts.push(format!("waiver reason: {waiver_reason}"));
     }
 
     if let Some(waiver_owner) = &item.waiver_owner {
-        parts.push(format!("waiver_owner={waiver_owner}"));
+        parts.push(format!("waiver owner: {waiver_owner}"));
     }
 
     if let Some(waiver_expires_at) = &item.waiver_expires_at {
-        parts.push(format!("waiver_expires_at={waiver_expires_at}"));
+        parts.push(format!("waiver expires: {waiver_expires_at}"));
     }
 
     if let Some(rule_source) = &item.rule_source {
-        parts.push(format!("rule_source={rule_source}"));
+        parts.push(format!("rule source: {rule_source}"));
     }
 
     if !item.trigger_paths.is_empty() {
-        parts.push(format!("trigger_paths={}", item.trigger_paths.join(",")));
+        parts.push(format!("triggers: {}", item.trigger_paths.join(", ")));
     }
 
-    parts.join(" ")
+    parts.join("; ")
 }
 
 fn emit_annotations(diagnostics: &[DiagnosticRecord], mode: LintMode) {
@@ -1100,9 +1186,10 @@ mod tests {
     use crate::freshness::{FreshnessItem, FreshnessSummary, LintFreshnessReport};
 
     use super::{
-        DIAGNOSTICS_SCHEMA_VERSION, Problem, SARIF_SCHEMA_URI, build_diagnostics_artifact,
-        build_diagnostics_artifact_with_freshness, build_report, build_report_from_artifact,
-        build_sarif_log, build_sarif_log_from_artifact, report_hint_lines,
+        DIAGNOSTICS_SCHEMA_VERSION, LINT_REPORT_SCHEMA_VERSION, Problem, SARIF_SCHEMA_URI,
+        build_diagnostics_artifact, build_diagnostics_artifact_with_freshness, build_report,
+        build_report_from_artifact, build_sarif_log, build_sarif_log_from_artifact,
+        report_hint_lines,
     };
 
     fn review_problem(
@@ -1156,6 +1243,9 @@ mod tests {
     #[test]
     fn build_report_marks_empty_run_as_ok() {
         let report = build_report(&[], &[], 0, DiagnosticDetail::Compact, 1, 5);
+        assert_eq!(report.schema_version, LINT_REPORT_SCHEMA_VERSION);
+        assert_eq!(report.command, "lint");
+        assert!(report.warnings.is_empty());
         assert_eq!(report.status, "ok");
         assert!(report.items.is_empty());
         assert_eq!(report.total_pages, 1);
